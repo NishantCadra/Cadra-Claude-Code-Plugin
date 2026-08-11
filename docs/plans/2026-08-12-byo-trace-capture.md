@@ -30,6 +30,7 @@
 - Create: `plugins/cadra-trace-tracker/scripts/cadra/config.py`
 - Create: `plugins/cadra-trace-tracker/scripts/cadra_connect.py`
 - Create: `plugins/cadra-trace-tracker/skills/cadra-connect/SKILL.md`
+- Create: `tests/__init__.py` (empty — makes `tests` importable)
 - Create: `tests/conftest.py`
 - Create: `tests/test_config.py`
 - Create: `pytest.ini`
@@ -50,8 +51,12 @@
 # pytest.ini
 [pytest]
 testpaths = tests
-pythonpath = plugins/cadra-trace-tracker/scripts
+pythonpath = . plugins/cadra-trace-tracker/scripts
 ```
+
+The leading `.` is required: later tasks do `from tests.conftest import write_jsonl`,
+which needs the repo root importable. Also create an empty `tests/__init__.py` so
+`tests` is a package.
 
 ```python
 # tests/conftest.py
@@ -2045,8 +2050,43 @@ Expected: all pass.
 
 - [ ] **Step 2: Confirm no third-party imports in shipped code**
 
-Run: `python -c "import ast,pathlib,sys; mods={n.split('.')[0] for p in pathlib.Path('plugins').rglob('*.py') for n in [a.name if isinstance(a,ast.alias) else '' for node in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(node,(ast.Import,ast.ImportFrom)) for a in (node.names if isinstance(node,ast.Import) else [ast.alias(name=node.module or '')])] if n}; print(sorted(mods))"`
-Expected: only standard-library names plus `cadra`. Any other name is a shipped third-party dependency and must be removed.
+Add this test rather than running an ad-hoc command, so the constraint stays
+enforced:
+
+```python
+# tests/test_no_third_party_imports.py
+"""Shipped code must import only the standard library — candidates run this on
+their own machines and a pip install is a support burden and a failure mode."""
+import ast
+import sys
+from pathlib import Path
+
+PLUGIN = Path(__file__).resolve().parents[1] / "plugins" / "cadra-trace-tracker"
+ALLOWED = set(sys.stdlib_module_names) | {"cadra"}
+
+
+def _imported_roots(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+    return roots
+
+
+def test_shipped_code_imports_stdlib_only():
+    offenders: dict[str, set[str]] = {}
+    for path in PLUGIN.rglob("*.py"):
+        extra = _imported_roots(path) - ALLOWED
+        if extra:
+            offenders[str(path.relative_to(PLUGIN))] = extra
+    assert offenders == {}, f"third-party imports in shipped code: {offenders}"
+```
+
+Run: `python -m pytest tests/test_no_third_party_imports.py -q`
+Expected: PASS
 
 - [ ] **Step 3: Record what still needs the proxy**
 
