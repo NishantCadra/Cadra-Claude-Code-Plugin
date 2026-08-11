@@ -53,7 +53,7 @@ Two consequences that shape everything below:
 | **No hooks.** Submission is a candidate-invoked skill only. | Consent must be an explicit act, not a background upload from a personal machine. |
 | **Ingest via proxy, not Supabase.** | Reuses `verify_jwt`; keeps credentials server-side; single write path for both OpenCode and BYO traces. |
 | **Group B (scope + data model + redaction) lands with Group A.** | The ingest contract cannot be defined without knowing exactly what is captured and what is stripped. |
-| **Distinct `f1-trace` token type.** | A BYO candidate runs the model on their own key; an `f1-coding` token would hand them free spend on Cadra's OpenRouter account. The chat route refuses `f1-trace`. |
+| **One token — the existing `f1-coding` assessment JWT**, with its lifetime extended to cover the submission grace. | A submission-only `f1-trace` type was specced and then rejected (2026-08-12): fmcg-family problems require the candidate's *deployed app* to call an LLM through the proxy, so BYO candidates need model access anyway, and a second token would only double the secrets to manage and leak. Token lifetime is not the control — `session_state.check()` enforces the window and prompt cap server-side, so a longer `exp` grants no extra chat access. |
 | **Submission survives a finished session.** | `active` and `exhausted` always accepted; `expired` accepted within a grace window; `revoked` refused. Refusing a late submission destroys evidence of work already done. |
 
 ### Open questions
@@ -327,9 +327,13 @@ and the rollup flips **`caution` → `ok`**.
 > poorer** — most agent file writes are not in it.
 
 There is also a sibling `tool-results/` directory holding offloaded large tool
-results (a 43 KB `.txt` in RDI). **Unresolved:** whether write *content* is ever
-offloaded there. If it is, those attestations are lost silently. Needs a targeted
-check before the ingest adapter is built.
+results (a 43 KB `.txt` in RDI). **Resolved (2026-08-12 spike
+`docs/spike/tool_results_offload_spike.py`):** offload is `<persisted-output>` for
+oversized **tool results** only (Bash / Grep / PowerShell). Across 489 JSONL
+files and 3,421 Write/Edit-family calls, every write body remained in the
+transcript — **0** Write/Edit offloads. The BYO collector does not need to read
+`tool-results/` for attestation; re-check if Claude Code later offloads
+`tool_use` inputs.
 
 ### 4.5 Finding 3 — tab-numbered read results defeat read matching
 
@@ -433,10 +437,7 @@ in the velocity and outsourced-prompt analyses.
    candidate running this, and both feed the §6 data model.
 3. **G10** — remove hooks, skill-only submit, dashboard consent.
 4. **G5 + G6** — server-side extraction into the existing F6 tables. *Proven
-   viable (§4); resolve the `tool-results` offload question first.*
+   viable (§4); `tool-results/` offload check closed (§4.4) — write bodies stay
+   in the JSONL.*
 5. **G9 + G11** — tamper-evidence and report provenance marking.
 6. **G7 + G8**, then **G12 + G13**.
-
-Item 4 stays sequenced after the contract work only because the extraction
-approach is now de-risked; if the `tool-results` check turns up offloaded write
-content, it moves forward.

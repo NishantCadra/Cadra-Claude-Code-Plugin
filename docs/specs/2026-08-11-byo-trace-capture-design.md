@@ -8,7 +8,8 @@ server-side redaction re-scan, attestation extraction wiring, storage and
 migrations are specified separately in `cadra-prototype`
 (`docs/superpowers/specs/2026-08-12-byo-trace-ingest-design.md`).
 **Evidence base:** [`../cadra-integration-assessment.md`](../cadra-integration-assessment.md)
-(gap register G1–G13, G5 spike) and the measurements in §8 below.
+(gap register G1–G13, G5 spike), the `tool-results/` offload spike
+(`docs/spike/tool_results_offload_spike.py`), and the measurements in §9 below.
 
 ---
 
@@ -36,7 +37,7 @@ candidate-supplied data would be weak enforcement presented as strong.
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **Skills only. No hooks.** | Consent must be an explicit act, not a background upload from a personal machine. Claude Code retains transcripts under `~/.claude/projects`, so nothing needs snapshotting as work happens. |
-| D2 | **Submission authenticated by a per-assessment `f1-trace` JWT.** | Replaces the self-asserted 5-digit ID (G1). The token grants submission only — the chat route refuses it, so a BYO candidate cannot spend against Cadra's model account. |
+| D2 | **Submission authenticated by the existing per-assessment `f1-coding` JWT** — the same token the Setup page already issues. | Replaces the self-asserted 5-digit ID (G1). One token, one secret to manage. A separate submission-only type was considered and rejected: BYO candidates still need proxy model access for problems where their *deployed app* calls an LLM (the `app_runtime` channel), so a submission-only token would force a second secret for no gain. Chat remains bounded by `session_state.check()`, not by token type. |
 | D3 | **No database credentials ship to candidates.** | Removes the published anon key (G2). The plugin's only network peer is the Cadra proxy. |
 | D4 | **Canonical envelope = OpenAI-style `{"messages": [...]}`.** | Exactly what `proxy/attest.py` already consumes, so BYO and OpenCode traces feed one extractor. Agent-agnostic: a future Cursor/Codex client writes its own adapter and the server is untouched. |
 | D5 | **The plugin owns all Claude Code format knowledge.** | Absolute-path rebasing, subagent merging, tab-numbered read results. None of it leaks into shared server code. |
@@ -96,7 +97,7 @@ spec) so plugin files never count toward attestation coverage.
 
 ```jsonc
 {
-  "token": "<f1-trace JWT>",
+  "token": "<assessment JWT — type f1-coding>",
   "assessment_label": "Suryaa FMCG",     // display only
   "workspace_root": "C:/Dev/my-solution",
   "git_remote": "https://github.com/candidate/solution.git",
@@ -121,8 +122,11 @@ on model fidelity for correctness.
 
 Triggered by "connect to Cadra", "set up my assessment", "my token is wrong".
 
-1. Ask for the token from the Setup page. Validate shape locally (three
-   dot-separated segments, decodes as JWT, `type == "f1-trace"`, unexpired).
+1. Ask for the token from the Setup page — the same token a managed candidate
+   pastes into `opencode.json`. Validate shape locally (three dot-separated
+   segments, decodes as JWT, carries `coding_assessment_id`, unexpired). Do not
+   assert on `type`: the server decides what a token may do, and hard-coding the
+   check client-side would break on any future type.
 2. Determine `workspace_root` — the current working directory, confirmed with the
    candidate. Read `git remote get-url origin` if the workspace is a git repo.
 3. Run `cadra_connect.py`, which appends `.cadra/` to `.gitignore`, writes
@@ -284,6 +288,23 @@ Claude Code transcripts carry the content of every `Read` and the stdout of ever
 `Bash` — `.env` bodies, connection strings, tokens in tool arguments. The existing
 plugin redacts nothing but images, and does that incorrectly.
 
+### 8.0 Shared module — sync discipline
+
+The rule set is implemented once. Canonical source of truth is
+`cadra-prototype/proxy/redact.py` (companion §8.1). Copies:
+
+| Location | Role |
+|---|---|
+| `cadra-prototype/proxy/redact.py` | Canonical |
+| `cadra-prototype/backend/services/redact.py` | Byte-identical twin (in-repo parity test) |
+| This plugin: `scripts/redact.py` | Vendored copy for the candidate machine |
+
+Edit order on every rules change: proxy → backend → plugin, then bump
+`rules_version` in all three. The plugin does **not** invent a parallel regex
+table. Cross-repo drift is caught by a release check that hashes
+`scripts/redact.py` against the proxy canonical file (or a checked-in golden
+hash). Envelope field `redaction.rules_version` must match the module constant.
+
 **Rules, versioned as `rules_version`:**
 
 | Class | Action |
@@ -439,7 +460,7 @@ No test infrastructure exists in this repo today; it is added with the rewrite.
 | Client-side redaction is defeatable by editing the plugin | Proxy re-scans (D6); this is accepted as tamper-*evident*, not tamper-proof |
 | A candidate can point `workspace_root` at unrelated work | Server-side binding check; and attestations only score against the submitted repo, so foreign material cannot inflate a score |
 | A candidate never invokes `cadra-submit` | Open — see §13 |
-| `tool-results/` offload directory may hold write content not present in the transcript | **Unresolved.** Must be checked before implementation; if write content is offloaded, those attestations are lost silently |
+| `tool-results/` offload hides write bodies | **Resolved — not a risk for attestation.** Spike (`docs/spike/tool_results_offload_spike.py`, 2026-08-12): 489 JSONL files, 3,421 Write/Edit-family calls, **0** missing bodies; 18 `<persisted-output>` stubs were Bash (13) / Grep (4) / PowerShell (1) only. Collector does **not** read `tool-results/` for attestation. Stubs stay as placeholder text (size control already caps tool results). Re-check if Claude Code starts offloading `tool_use` inputs. |
 
 ---
 
@@ -448,8 +469,7 @@ No test infrastructure exists in this repo today; it is added with the rewrite.
 1. **No-submission outcome.** With no hooks, a candidate who never runs
    `cadra-submit` submits nothing. Is that an accepted visible outcome, or is a
    reminder surface needed on the dashboard?
-2. **`tool-results/` offload** (§12) — needs a targeted check.
-3. **Multiple machines.** A candidate who works on two machines must connect on
+2. **Multiple machines.** A candidate who works on two machines must connect on
    each; transcripts are local. Submissions merge server-side by `session_id`, but
    this is untested.
 
