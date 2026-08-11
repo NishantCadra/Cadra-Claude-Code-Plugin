@@ -1,0 +1,14 @@
+{
+  "name": "cadra",
+  "owner": {
+    "name": "Nishant Sharma",
+    "email": "sharmanish28@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "cadra-trace-tracker",
+      "source": "./plugins/cadra-trace-tracker",
+      "description": "Automatic session-trace capture for Cadra-run programs. Captures only sessions run from the claude-code-project workspace folder."
+    }
+  ]
+}
