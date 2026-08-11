@@ -235,6 +235,7 @@ upsert-on-growth semantics.
 | images, anywhere | placeholder text | Including inside `tool_result` parts. |
 | `mode`, `permission-mode`, `ai-title`, `file-history-*`, `attachment`, `queue-operation`, `agent-name`, `last-prompt` | dropped | Not conversation. |
 | subagent entries | merged into `messages` by timestamp | Tagged `cadra_agent:{parent_tool_use_id, agent_type}`. |
+| entry `timestamp` | `client_ts` on every emitted message | Mandatory — see §7.3. |
 
 Subagent messages are **interleaved into the same array**, not held separately, so
 `attestation_items_from_payload` picks up their file writes with no server change.
@@ -263,7 +264,27 @@ and **zero** read events are produced — starving `foreign_code_rewritten`. The
 plugin strips it, per D5. The server's own stripper is a safe no-op on
 already-stripped text because its 80% threshold will not match.
 
-### 7.3 Envelope
+### 7.3 Per-message timestamps are mandatory
+
+Every emitted message carries `client_ts`, taken from the source entry's
+`timestamp`:
+
+```jsonc
+{ "role": "user", "content": "…", "client_ts": "2026-08-11T09:14:22.118Z" }
+```
+
+**This is not metadata garnish — omitting it mass-flags the candidate.** The
+server's velocity check measures elapsed time between an assistant row and the
+next user row. Its default clock is `first_seen_at`, stamped when the row is
+inserted; because a BYO session's rows are all inserted in one burst at
+submission, every gap collapses to milliseconds and every long user message
+trips the paste threshold. The companion spec's §11.1 makes the velocity clock
+prefer `client_ts`, which only works if the plugin supplies it.
+
+`client_ts` is passed through verbatim, never synthesised or interpolated. A
+message whose source entry has no timestamp omits the field rather than guessing.
+
+### 7.4 Envelope
 
 ```jsonc
 {
@@ -276,7 +297,7 @@ already-stripped text because its 80% threshold will not match.
   "chunk":   { "index": 0, "total": 2, "prefix_hash": "…", "chunk_hash": "…" },
   "redaction": { "rules_version": "1", "redacted_count": 12 },
   "truncated_paths": ["data/huge.csv"],
-  "messages": [ … ]
+  "messages": [ /* each carrying client_ts — §7.3 */ ]
 }
 ```
 
@@ -446,6 +467,11 @@ No test infrastructure exists in this repo today; it is added with the rewrite.
   absolute-path defect.
 - **Redaction:** each rule class; assert `last-preview.json` is byte-identical to
   the submitted payload.
+- **Timestamps:** every emitted message carries `client_ts` matching its source
+  entry verbatim; an entry without a timestamp omits the field rather than
+  substituting a value. This pairs with the server-side velocity guard in the
+  companion spec §14 — together they are what stop BYO candidates being
+  mass-flagged for pasting.
 - **Filesystem invariant:** run a submission against a temp workspace and assert
   no write occurred outside `.cadra/` and `.gitignore`.
 - **Chunking:** boundary and hash-chain correctness.
@@ -459,19 +485,37 @@ No test infrastructure exists in this repo today; it is added with the rewrite.
 | Claude Code's transcript format is not a stable public contract, and already moved subagents out of the main file | `agent.version` and `capture_version` travel in every envelope; the server tolerates unknown keys; the extraction-parity test fails loudly on a format change |
 | Client-side redaction is defeatable by editing the plugin | Proxy re-scans (D6); this is accepted as tamper-*evident*, not tamper-proof |
 | A candidate can point `workspace_root` at unrelated work | Server-side binding check; and attestations only score against the submitted repo, so foreign material cannot inflate a score |
-| A candidate never invokes `cadra-submit` | Open — see §13 |
+| A candidate never invokes `cadra-submit` | **Resolved** — submission is an explicit dashboard deliverable (§13.1). Non-submission is a visible outcome, like an unpushed repo |
+| Envelope omits `client_ts`, collapsing the server's velocity clock | Mandatory field (§7.3) with a dedicated test; the server-side guard test in the companion spec §14 fails loudly if it is missing |
 | `tool-results/` offload hides write bodies | **Resolved — not a risk for attestation.** Spike (`docs/spike/tool_results_offload_spike.py`, 2026-08-12): 489 JSONL files, 3,421 Write/Edit-family calls, **0** missing bodies; 18 `<persisted-output>` stubs were Bash (13) / Grep (4) / PowerShell (1) only. Collector does **not** read `tool-results/` for attestation. Stubs stay as placeholder text (size control already caps tool results). Re-check if Claude Code starts offloading `tool_use` inputs. |
 
 ---
 
-## 13. Open questions
+## 13. Resolved questions
 
-1. **No-submission outcome.** With no hooks, a candidate who never runs
-   `cadra-submit` submits nothing. Is that an accepted visible outcome, or is a
-   reminder surface needed on the dashboard?
-2. **Multiple machines.** A candidate who works on two machines must connect on
-   each; transcripts are local. Submissions merge server-side by `session_id`, but
-   this is untested.
+### 13.1 A candidate who never submits
+
+**Decision (2026-08-12): trace submission is an explicit deliverable** on the
+assessment dashboard checklist, alongside the repo URL and the deployed endpoint.
+
+No nag mechanism and no background capture. A candidate who does not submit has
+no trace, exactly as a candidate who does not push has no repo — a visible,
+attributable outcome rather than a silent one. This costs nothing to build,
+matches how the other two deliverables already work, and keeps D1 intact: capture
+remains an explicit act.
+
+`candidate-onboarding.md` gains the corresponding checklist line.
+
+### 13.2 Multiple machines
+
+**Decision: supported, no special handling.** A candidate connects on each machine
+and submits from each. Claude Code `sessionId`s are globally unique, so sessions
+from different machines cannot collide, and each lands as its own row under the
+same assessment. `workspace_root` may legitimately differ between machines while
+`git_remote` stays constant, which the server's binding rule already permits
+(companion §7, rule 5).
+
+Covered by a test in the companion spec's §14 rather than by design machinery.
 
 ---
 
