@@ -24,8 +24,12 @@ Must run from inside a traced workspace (folder containing `.claude-project`) th
    powershell -NoProfile -ExecutionPolicy Bypass -File "%CLAUDE_PLUGIN_ROOT%\scripts\submit-traces.ps1" -ProjectDir "<workspace path>" -List
    ```
 
-2. Render the output as a simple, readable flow — a short markdown table or list, newest first:
-   - For each `[SAVED]` line: date, project name, session title, turn count. These are IN the database (server-confirmed).
+2. Render each saved session as a one-line STORY, newest first, so the user can recognize their work sessions at a glance. The command output gives you, per session: time span, project, turn count, the message the session BEGAN with, and the message it ENDED with. Present like:
+
+   > **Mon 11 Aug, 09:57–10:03** · 39 turns · began *"hi"* → ended *"submit my trace"* ✓ saved
+
+   IMPORTANT: never present the opening message alone as if it were the whole session — a session that began with "hi" still contains ALL turns up to its end; the begin → end pair plus the turn count is what shows the full span is stored. If the user seems unsure whether later work was captured, say explicitly: the entire transcript from first to last message is in the database, and the turn count proves it.
+
    - For each `[PENDING]` line: note it as "captured locally, not yet saved" and suggest "say 'save my trace' to save them now".
    - If the list is empty: say no sessions are saved yet and explain saving happens automatically at session end or on "save my trace".
 

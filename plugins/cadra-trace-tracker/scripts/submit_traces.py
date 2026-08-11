@@ -30,7 +30,7 @@ ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI
 RPC_SUBMIT = "tracker_submit_session_staging"
 RPC_LIST = "tracker_my_sessions_staging"
 MARKER = ".claude-project"
-CAPTURE_VERSION = "2.2.1"
+CAPTURE_VERSION = "2.2.3"
 
 
 def now_iso():
@@ -181,7 +181,15 @@ def main():
         print(f"SAVED SESSIONS for user {roll} ({len(rows)} in database):")
         for r in rows:
             pn = r.get("project_name") or "-"
-            print(f"  [SAVED] {r['captured_at'][:16]}  {pn}  '{(r.get('title') or '')[:70]}'  turns={r.get('turn_count')}  id={r['session_id'][:8]}")
+            start = (r.get("started_at") or "")[:16]
+            end = (r.get("ended_at") or "")[11:16]
+            first = (r.get("title") or "").strip()[:60]
+            last = (r.get("last_message") or "").strip()[:60]
+            span = f"{start}-{end}" if start and end else (r.get("captured_at") or "")[:16]
+            print(f"  [SAVED] {span}  {pn}  {r.get('turn_count')} turns  id={r['session_id'][:8]}")
+            print(f"          began: '{first}'")
+            if last and last != first:
+                print(f"          ended: '{last}'")
         if local_pending:
             print(f"NOT YET SAVED ({len(local_pending)} pending locally):")
             for n in local_pending:

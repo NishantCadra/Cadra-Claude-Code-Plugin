@@ -23,7 +23,7 @@ $SupabaseUrl   = "https://pyrpzlppjmejlohiqoyc.supabase.co"
 $AnonKey       = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB5cnB6bHBwam1lamxvaGlxb3ljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ5MjM1NzcsImV4cCI6MjA4MDQ5OTU3N30.wREHqbUvRhBZoeN4IxPMZVc27FfYeFQNMysKQ7icy0I"
 $Table         = "tracker_sessions_staging"
 $ProjectName   = "claude-code-project"
-$CaptureVersion = "2.2.1"
+$CaptureVersion = "2.2.3"
 
 # Candidate roots where the Claude desktop app stores local session data.
 $SearchRoots = @(
@@ -72,25 +72,12 @@ function Log($msg) {
 }
 
 # ------------------------------------------------------------- identity
-$IdentityPath = Join-Path $Traces "identity.json"
 $Roll = $null
 try { $Roll = (Get-Content -Raw (Join-Path $Root ".claude-project") | ConvertFrom-Json).user_id } catch {}
-$ProjName = Split-Path -Leaf $Root   # auto label: workspace folder name else {
-    if ($Silent) { exit 0 }   # silent hook run before first-time setup: nothing to do
-    Write-Host ""
-    Write-Host "=== First-time setup ==="
-    Write-Host "Your user ID is checked against the official program roster"
-    Write-Host "when traces are uploaded - a wrong user ID will be REJECTED."
-    do {
-        $Roll = (Read-Host "Enter your 5-digit user ID (issued to you by email, e.g. 47291)").Trim()
-        if ($Roll -notmatch "^\d{5}$") {
-            Write-Host "That doesn't look right - it must be exactly 5 digits. Try again."
-            $Roll = $null
-        }
-    } while (-not $Roll)
-    @{ roll_no = $Roll; activated_at = (Get-Date -Format "o") } |
-        ConvertTo-Json | Set-Content -Path $IdentityPath -Encoding UTF8
-    Log "IDENTITY  roll $Roll saved"
+$ProjName = Split-Path -Leaf $Root   # auto label: workspace folder name
+if (-not $Roll) {
+    if (-not $Silent) { Write-Host "This workspace is not registered yet. Start a Claude session here and it will ask for your user ID." }
+    exit 0
 }
 if ($List) {
     try {
@@ -104,7 +91,10 @@ if ($List) {
     Write-Host ("SAVED SESSIONS for user {0} ({1} in database):" -f $Roll, @($rows).Count)
     foreach ($r in $rows) {
         $pn = if ($r.project_name) { $r.project_name } else { "-" }
-        Write-Host ("  [SAVED] {0}  {1}  '{2}'  turns={3}  id={4}" -f $r.captured_at.Substring(0,16), $pn, $r.title, $r.turn_count, $r.session_id.Substring(0,8))
+        $span = if ($r.started_at -and $r.ended_at) { "{0}-{1}" -f $r.started_at.Substring(0,16), $r.ended_at.Substring(11,5) } else { $r.captured_at.Substring(0,16) }
+        Write-Host ("  [SAVED] {0}  {1}  {2} turns  id={3}" -f $span, $pn, $r.turn_count, $r.session_id.Substring(0,8))
+        Write-Host ("          began: '{0}'" -f $r.title)
+        if ($r.last_message -and $r.last_message -ne $r.title) { Write-Host ("          ended: '{0}'" -f $r.last_message) }
     }
     $pendingFiles = @(Get-ChildItem -Path $Pending -Filter "*.json" -File -ErrorAction SilentlyContinue)
     if ($pendingFiles.Count -gt 0) {

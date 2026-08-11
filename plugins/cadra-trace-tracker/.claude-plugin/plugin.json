@@ -1,6 +1,6 @@
 {
   "name": "cadra-trace-tracker",
-  "version": "2.2.1",
+  "version": "2.2.3",
   "description": "Automatic session-trace capture for Cadra-run programs. Records full transcripts ONLY of Claude Code sessions run from the workspace folder marked with .claude-project, spools them into that folder's _traces area, and submits them to the program database at session end. Personal sessions and other projects are never touched. Do not modify - trace data is program evidence.",
   "author": {
     "name": "Nishant Sharma",
