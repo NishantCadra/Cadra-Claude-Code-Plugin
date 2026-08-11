@@ -140,3 +140,44 @@ distribute the workspace folder + install instructions to the cohort.
    enrollment tokens via Edge Function.
 3. Windows python3 Store-alias may flash before the PowerShell fallback (see cross-platform note).
 4. A session both continued and never re-exited uploads only at next session end.
+
+
+---
+
+## v2.1.0 addendum (architect-feedback release)
+
+What changed: hooks are now best-effort only — the **save-trace skill** is the
+authoritative, server-verified path. Gate is **marker-file-only** (folder names
+irrelevant). Registration asks user ID **and project name**. New **my-traces**
+skill shows saved sessions.
+
+Additional checks:
+
+- [ ] V1 Say "save my trace" mid-session → skill runs uploader in foreground,
+      reports "n sessions confirmed present in database" (VERIFIED line).
+- [ ] V2 Say "save my trace" again immediately → "everything already saved".
+- [ ] V3 Say "show my traces" → compact list of saved sessions (dates, project
+      names, titles, turns) + pending count; no transcript content shown.
+- [ ] V4 Rename your workspace folder to anything → next session still traced
+      (marker gate), rows carry your registered project name.
+- [ ] V5 Create an unrelated folder literally named `claude-code-project`
+      WITHOUT the marker file, run a session there → nothing traced, no
+      _traces folder appears (collision fix).
+- [ ] V6 Registration in a fresh workspace asks BOTH user ID and project name;
+      `_traces/identity.json` contains both.
+
+
+## v2.2.0 addendum (single-file identity)
+
+Marker renamed to `.claude-project` and it now HOLDS the user ID: presence of
+the file = folder is traced; `user_id` inside it = who. `_traces/identity.json`
+retired (legacy workspaces with `.cowork-project` still work). Registration
+asks ONE question (user ID only). Project label auto-derives from the folder
+name — no user input.
+
+- [ ] W1 Fresh workspace: first session asks ONLY for user ID; after answering,
+      `.claude-project` contains `user_id` and `registered_at`.
+- [ ] W2 Rows in DB carry `project_name` = the workspace folder's name.
+- [ ] W3 Folder without `.claude-project` → never traced, regardless of name.
+- [ ] W4 Legacy folder (`.cowork-project` + `_traces/identity.json`) → still
+      traced and uploads under the legacy ID.

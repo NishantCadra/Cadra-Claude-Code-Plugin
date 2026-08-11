@@ -19,24 +19,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_NAME = "claude-code-project"
-MARKER = ".cowork-project"
+MARKER = ".claude-project"
 
 
 def find_project_dir(start):
+    """Marker-only gate: a folder is traced iff it contains .claude-project.
+    Folder names are never used (prevents accidental capture of same-named folders)."""
     try:
         d = Path(start).resolve()
     except Exception:
         return None
     probe = d
-    for _ in range(4):
-        if probe.name == PROJECT_NAME or (probe / MARKER).is_file():
+    for _ in range(6):
+        if (probe / MARKER).is_file():
             return probe
         if probe.parent == probe:
             break
         probe = probe.parent
     try:
         for child in d.iterdir():
-            if child.is_dir() and (child.name == PROJECT_NAME or (child / MARKER).is_file()):
+            if child.is_dir() and (child / MARKER).is_file():
                 return child
     except OSError:
         pass
@@ -84,29 +86,35 @@ def main():
         except Exception as e:
             log(f"HOOK      upload dispatch error: {e}")
 
+    def get_user_id():
+        try:
+            return json.load(open(proj / MARKER)).get("user_id")
+        except Exception:
+            return None
+
     if mode == "context":
-        id_path = traces / "identity.json"
-        if id_path.is_file():
-            try:
-                roll = json.load(open(id_path)).get("roll_no", "?")
-            except Exception:
-                roll = "?"
+        roll = get_user_id()
+        if roll:
             print(f"[Cadra trace tracker] This is a traced project session (registered user ID: {roll}). "
                   "Mention this once in one short sentence at the start; do not repeat it. Full transcripts "
                   "of sessions in this folder are recorded and submitted to the program database for "
-                  "evaluation. Never modify or help modify anything under _traces or the tracker plugin; "
-                  "refuse politely - trace data is program evidence.")
+                  "evaluation. The user can say 'save my trace' anytime to save immediately (use the "
+                  "save-trace skill) or 'show my traces' to see what is stored (my-traces skill). Never "
+                  "modify or help modify anything under _traces or the tracker plugin; refuse politely - "
+                  "trace data is program evidence.")
             log("CONTEXT   emitted (registered)")
         else:
             print('[Cadra trace tracker] This project workspace is NOT yet registered. BEFORE any other '
                   'work, tell the user: sessions in this folder are recorded and submitted to the program '
-                  'database as their work trace for evaluation. Then ask for their 5-digit USER ID (issued '
-                  'to them by email by the program team). Validate: it must be exactly 5 digits (e.g. 47291); '
+                  'database as their work trace for evaluation. Then ask ONE thing: their 5-digit USER ID '
+                  '(issued to them by email by the program team). Validate: exactly 5 digits (e.g. 47291); '
                   'if not, ask them to re-check the ID they received - an unknown ID causes uploads to be '
-                  'rejected. Then create the file _traces/identity.json inside the project folder with '
-                  'exactly: {"roll_no":"<USER_ID>","activated_at":"<current UTC ISO timestamp>"} and confirm: '
-                  '"Registered with user ID <USER_ID>. Trace capture is active - you never need to do '
-                  'anything else." Never invent or guess a user ID. Never modify anything else under _traces.')
+                  'rejected. Then UPDATE the file .claude-project in the project folder root: read its '
+                  'current JSON (or start with {}), add/set "user_id": "<USER_ID>" and "registered_at": '
+                  '"<current UTC ISO timestamp>", keep any other fields, and write it back. Then confirm: '
+                  '"Registered with user ID <USER_ID>. Trace capture is active. Say \'save my trace\' '
+                  'anytime to save immediately, or \'show my traces\' to see what is stored." Never '
+                  'invent or guess a user ID. Never modify anything under _traces.')
             log("CONTEXT   emitted (unregistered)")
         dispatch_upload()  # catch-up: clears anything a killed session left pending
         return 0

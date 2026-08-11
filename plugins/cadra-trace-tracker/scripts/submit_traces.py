@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Cadra Trace Tracker - harvest + upload (macOS / Linux).
+"""Cadra Trace Tracker - harvest + upload (macOS / Linux). v2.2.0
 
-Same contract as submit-traces.ps1 (Windows): scans Claude Code session
-storage (~/.claude/projects) plus the project's _traces/raw snapshots for
-project-related transcripts, builds envelopes (with image payloads stripped),
-and submits them to the program database via the validated RPC (server checks
-the roll number against the roster and upserts).
+Scans Claude Code session storage (~/.claude/projects) plus the workspace's
+_traces/raw snapshots for THIS project's transcripts, builds envelopes (image
+payloads stripped), and submits them via the validated RPC (server checks the
+user ID against the roster and upserts).
+
+Gate: a workspace is traced ONLY if it contains the .claude-project marker.
+Folder names are irrelevant (no accidental capture of same-named folders).
 
 Usage:
-    python3 submit_traces.py                    interactive (first run asks roll number)
-    python3 submit_traces.py --silent           hook mode: no prompts ever
-    python3 submit_traces.py --scan-only        harvest but do not upload
-    python3 submit_traces.py --project-dir P    explicit project folder
+    python3 submit_traces.py --project-dir P            harvest + upload
+    python3 submit_traces.py --project-dir P --silent   hook mode: no prompts
+    python3 submit_traces.py --project-dir P --scan-only
+    python3 submit_traces.py --project-dir P --list     list MY saved sessions from the database
 """
 import argparse
 import json
+import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -23,10 +27,10 @@ from pathlib import Path
 
 SUPABASE_URL = "https://pyrpzlppjmejlohiqoyc.supabase.co"
 ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB5cnB6bHBwam1lamxvaGlxb3ljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ5MjM1NzcsImV4cCI6MjA4MDQ5OTU3N30.wREHqbUvRhBZoeN4IxPMZVc27FfYeFQNMysKQ7icy0I"
-RPC = "tracker_submit_session_staging"
-PROJECT_NAME = "claude-code-project"
-MARKER = ".cowork-project"
-CAPTURE_VERSION = "1.0.0-plugin"
+RPC_SUBMIT = "tracker_submit_session_staging"
+RPC_LIST = "tracker_my_sessions_staging"
+MARKER = ".claude-project"
+CAPTURE_VERSION = "2.2.1"
 
 
 def now_iso():
@@ -34,14 +38,32 @@ def now_iso():
 
 
 def find_project_dir():
+    """Marker-only gate: nearest ancestor containing .claude-project."""
     probe = Path.cwd().resolve()
-    for _ in range(4):
-        if probe.name == PROJECT_NAME or (probe / MARKER).is_file():
+    for _ in range(6):
+        if (probe / MARKER).is_file():
             return probe
         if probe.parent == probe:
             break
         probe = probe.parent
     return None
+
+
+def encoded_dir_name(proj):
+    """Claude Code encodes a session's cwd into its storage folder name by
+    replacing non-alphanumerics with '-'. Compute it for THIS workspace."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(proj))
+
+
+def rpc(name, payload):
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/rpc/{name}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"apikey": ANON_KEY, "Authorization": f"Bearer {ANON_KEY}",
+                 "Content-Type": "application/json"},
+        method="POST")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8") or "null")
 
 
 def extract_text(msg):
@@ -109,39 +131,19 @@ def parse_transcript(path):
     }
 
 
-def upload(row):
-    req = urllib.request.Request(
-        f"{SUPABASE_URL}/rest/v1/rpc/{RPC}",
-        data=json.dumps({"p": row}).encode("utf-8"),
-        headers={"apikey": ANON_KEY, "Authorization": f"Bearer {ANON_KEY}",
-                 "Content-Type": "application/json"},
-        method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return "uploaded" if 200 <= resp.status < 300 else f"http_{resp.status}"
-    except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", "ignore")[:200]
-        except Exception:
-            pass
-        return f"http_{e.code}:{detail}"
-    except Exception as e:
-        return f"network_error:{type(e).__name__}"
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--silent", action="store_true")
     ap.add_argument("--scan-only", action="store_true")
+    ap.add_argument("--list", action="store_true", dest="list_sessions")
     ap.add_argument("--project-dir", default=None)
     args = ap.parse_args()
 
     proj = Path(args.project_dir).resolve() if args.project_dir else find_project_dir()
-    if proj is None or not proj.is_dir():
+    if proj is None or not proj.is_dir() or not (proj / MARKER).is_file():
         if args.silent:
             return 0
-        print(f"Could not find the {PROJECT_NAME} project folder from here. Run this from inside the folder.")
+        print("Could not find a traced workspace (missing .claude-project marker). Run from inside your project folder.")
         return 1
 
     traces = proj / "_traces"
@@ -150,13 +152,6 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
     log_path = traces / "tracker.log"
 
-    # single-flight lock: another uploader running in the last 2 minutes wins
-    import time
-    lock = traces / "upload.lock"
-    if lock.is_file() and (time.time() - lock.stat().st_mtime) < 120:
-        return 0
-    lock.write_text(str(now_iso()))
-
     def log(msg):
         line = f"{now_iso()} | {msg}"
         with open(log_path, "a", encoding="utf-8") as f:
@@ -164,22 +159,44 @@ def main():
         if not args.silent:
             print(line)
 
-    # ---- identity
-    id_path = traces / "identity.json"
-    if id_path.is_file():
-        roll = json.load(open(id_path)).get("roll_no")
-    else:
-        if args.silent:
-            return 0
-        print("\n=== First-time setup ===")
-        print("Your user ID is checked against the official program roster")
-        print("when traces are uploaded - a wrong user ID will be REJECTED.")
-        roll = ""
-        while not (roll.isdigit() and len(roll) == 5):
-            roll = input("Enter your 5-digit user ID (issued to you by email, e.g. 47291): ").strip()
-        json.dump({"roll_no": roll, "activated_at": now_iso()}, open(id_path, "w"))
-        log(f"IDENTITY  roll {roll} saved")
-    log(f"RUN START roll={roll} scanonly={args.scan_only}")
+    # ---- identity: user_id lives in the .claude-project marker
+    try:
+        roll = json.load(open(proj / MARKER)).get("user_id")
+    except Exception:
+        roll = None
+    project_name = proj.name  # auto label: the workspace folder's name, no user input
+    if not roll:
+        if not args.silent:
+            print("This workspace is not registered yet. Start a Claude session here and it will ask for your user ID.")
+        return 0
+
+    # ---- list mode: read MY saved sessions from the database and print them
+    if args.list_sessions:
+        try:
+            rows = rpc(RPC_LIST, {"p_code": roll}) or []
+        except Exception as e:
+            print(f"LIST FAILED: could not reach the database ({type(e).__name__}). Check internet and retry.")
+            return 1
+        local_pending = sorted(p.name for p in pending.glob("*.json"))
+        print(f"SAVED SESSIONS for user {roll} ({len(rows)} in database):")
+        for r in rows:
+            pn = r.get("project_name") or "-"
+            print(f"  [SAVED] {r['captured_at'][:16]}  {pn}  '{(r.get('title') or '')[:70]}'  turns={r.get('turn_count')}  id={r['session_id'][:8]}")
+        if local_pending:
+            print(f"NOT YET SAVED ({len(local_pending)} pending locally):")
+            for n in local_pending:
+                print(f"  [PENDING] {n}")
+        else:
+            print("PENDING: none - everything captured locally has been saved.")
+        return 0
+
+    # single-flight lock
+    lock = traces / "upload.lock"
+    if lock.is_file() and (time.time() - lock.stat().st_mtime) < 120:
+        return 0
+    lock.write_text(now_iso())
+
+    log(f"RUN START user={roll} project={project_name} scanonly={args.scan_only}")
 
     # ---- harvest
     state_path = traces / "state.json"
@@ -190,6 +207,10 @@ def main():
         except Exception:
             state = {}
 
+    enc = encoded_dir_name(proj)
+    proj_str = str(proj)
+    proj_str_esc = proj_str.replace("\\", "\\\\")
+
     roots = [Path.home() / ".claude" / "projects", raw]
     files = []
     for r in roots:
@@ -199,11 +220,13 @@ def main():
 
     found = new = 0
     for f in files:
-        dir_match = PROJECT_NAME in f.parent.name or f.parent == raw
+        # THIS workspace only: encoded-cwd dir match, our raw snapshots, or
+        # content referencing this workspace's absolute path.
+        dir_match = f.parent.name == enc or f.parent == raw
         if not dir_match:
             try:
                 with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                    if not any(PROJECT_NAME in line for line in fh):
+                    if not any((proj_str in line) or (proj_str_esc in line) for line in fh):
                         continue
             except OSError:
                 continue
@@ -220,6 +243,7 @@ def main():
         envelope = {
             "envelope_version": 1, "capture_version": CAPTURE_VERSION,
             "plugin_hash": "harvester-py", "roll_no": roll,
+            "project_name": project_name,
             "hook_event": "harvest", "client_captured_at": now_iso(), **parsed,
         }
         out = pending / (env_name + ".json")
@@ -233,10 +257,15 @@ def main():
 
     if args.scan_only:
         log("SCANONLY  stopping before upload.")
+        try:
+            lock.unlink()
+        except OSError:
+            pass
         return 0
 
     # ---- upload
     ok = failed = 0
+    uploaded_ids = []
     for f in sorted(pending.glob("*.json")):
         try:
             envelope = json.load(open(f, encoding="utf-8"))
@@ -245,17 +274,41 @@ def main():
             failed += 1
             continue
         row = {k: envelope.get(k) for k in (
-            "session_id", "roll_no", "title", "started_at", "ended_at", "client_captured_at",
-            "turn_count", "envelope_version", "capture_version", "plugin_hash", "hook_event", "transcript")}
-        outcome = upload(row)
-        if outcome == "uploaded":
+            "session_id", "roll_no", "project_name", "title", "started_at", "ended_at",
+            "client_captured_at", "turn_count", "envelope_version", "capture_version",
+            "plugin_hash", "hook_event", "transcript")}
+        try:
+            rpc(RPC_SUBMIT, {"p": row})
             f.replace(sent / f.name)
             log(f"UPLOADED  {f.name}")
+            uploaded_ids.append(row["session_id"])
             ok += 1
-        else:
-            log(f"FAILED    {f.name} -> {outcome}")
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "ignore")[:200]
+            except Exception:
+                pass
+            log(f"FAILED    {f.name} -> http_{e.code}:{detail}")
             failed += 1
-    log(f"DONE      {ok} uploaded/confirmed, {failed} failed, {found} project session(s) known in total")
+        except Exception as e:
+            log(f"FAILED    {f.name} -> network_error:{type(e).__name__}")
+            failed += 1
+
+    # ---- server-side receipt verification for this run's uploads
+    if uploaded_ids:
+        try:
+            rows = rpc(RPC_LIST, {"p_code": roll}) or []
+            in_db = {r["session_id"] for r in rows}
+            verified = [s for s in uploaded_ids if s in in_db]
+            missing = [s for s in uploaded_ids if s not in in_db]
+            log(f"VERIFIED  {len(verified)}/{len(uploaded_ids)} of this run's uploads confirmed present in database")
+            for s in missing:
+                log(f"UNVERIFIED {s} - uploaded but not visible in database; will be retried next run")
+        except Exception as e:
+            log(f"VERIFY    could not confirm with database ({type(e).__name__}) - uploads were accepted but receipt check failed")
+
+    log(f"DONE      {ok} uploaded, {failed} failed, {found} project session(s) known in total")
     try:
         lock.unlink()
     except OSError:

@@ -5,7 +5,7 @@
 #
 # What it does:
 #   1. First run: asks for your roll number once, remembers it.
-#   2. Scans the Claude desktop app's local Cowork session storage for
+#   2. Scans Claude Code's local session storage for
 #      session transcripts (.jsonl) that reference this project.
 #   3. Builds one trace envelope per project session into _traces\pending.
 #   4. Uploads envelopes to the program database; moves them to _traces\sent.
@@ -14,7 +14,7 @@
 # Optional: powershell -File submit-traces.ps1 -ScanOnly   (no upload,
 # just report what would be captured — used for troubleshooting)
 # =====================================================================
-param([switch]$ScanOnly, [switch]$Silent, [string]$ProjectDir)
+param([switch]$ScanOnly, [switch]$Silent, [switch]$List, [string]$ProjectDir)
 
 $ErrorActionPreference = "Stop"
 
@@ -23,7 +23,7 @@ $SupabaseUrl   = "https://pyrpzlppjmejlohiqoyc.supabase.co"
 $AnonKey       = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB5cnB6bHBwam1lamxvaGlxb3ljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ5MjM1NzcsImV4cCI6MjA4MDQ5OTU3N30.wREHqbUvRhBZoeN4IxPMZVc27FfYeFQNMysKQ7icy0I"
 $Table         = "tracker_sessions_staging"
 $ProjectName   = "claude-code-project"
-$CaptureVersion = "1.0.0-plugin"
+$CaptureVersion = "2.2.1"
 
 # Candidate roots where the Claude desktop app stores local session data.
 $SearchRoots = @(
@@ -40,7 +40,7 @@ if ($ProjectDir -and (Test-Path $ProjectDir)) {
     $Root = $null
     $probe = (Get-Location).Path
     for ($i = 0; $i -lt 4 -and $probe; $i++) {
-        if ((Split-Path -Leaf $probe) -eq $ProjectName -or (Test-Path (Join-Path $probe ".cowork-project"))) { $Root = $probe; break }
+        if (Test-Path (Join-Path $probe ".claude-project")) { $Root = $probe; break }
         $parent = Split-Path -Parent $probe
         if ($parent -eq $probe) { break }
         $probe = $parent
@@ -73,10 +73,9 @@ function Log($msg) {
 
 # ------------------------------------------------------------- identity
 $IdentityPath = Join-Path $Traces "identity.json"
-if (Test-Path $IdentityPath) {
-    $Identity = Get-Content -Raw $IdentityPath | ConvertFrom-Json
-    $Roll = $Identity.roll_no
-} else {
+$Roll = $null
+try { $Roll = (Get-Content -Raw (Join-Path $Root ".claude-project") | ConvertFrom-Json).user_id } catch {}
+$ProjName = Split-Path -Leaf $Root   # auto label: workspace folder name else {
     if ($Silent) { exit 0 }   # silent hook run before first-time setup: nothing to do
     Write-Host ""
     Write-Host "=== First-time setup ==="
@@ -93,8 +92,31 @@ if (Test-Path $IdentityPath) {
         ConvertTo-Json | Set-Content -Path $IdentityPath -Encoding UTF8
     Log "IDENTITY  roll $Roll saved"
 }
+if ($List) {
+    try {
+        $rows = Invoke-RestMethod -Method Post -Uri "$SupabaseUrl/rest/v1/rpc/tracker_my_sessions_staging" `
+            -Headers @{ apikey = $AnonKey; Authorization = "Bearer $AnonKey" } `
+            -ContentType "application/json" -Body (@{ p_code = $Roll } | ConvertTo-Json)
+    } catch {
+        Write-Host "LIST FAILED: could not reach the database. Check internet and retry."
+        exit 1
+    }
+    Write-Host ("SAVED SESSIONS for user {0} ({1} in database):" -f $Roll, @($rows).Count)
+    foreach ($r in $rows) {
+        $pn = if ($r.project_name) { $r.project_name } else { "-" }
+        Write-Host ("  [SAVED] {0}  {1}  '{2}'  turns={3}  id={4}" -f $r.captured_at.Substring(0,16), $pn, $r.title, $r.turn_count, $r.session_id.Substring(0,8))
+    }
+    $pendingFiles = @(Get-ChildItem -Path $Pending -Filter "*.json" -File -ErrorAction SilentlyContinue)
+    if ($pendingFiles.Count -gt 0) {
+        Write-Host ("NOT YET SAVED ({0} pending locally):" -f $pendingFiles.Count)
+        foreach ($f in $pendingFiles) { Write-Host ("  [PENDING] {0}" -f $f.Name) }
+    } else {
+        Write-Host "PENDING: none - everything captured locally has been saved."
+    }
+    exit 0
+}
 Write-Host ""
-Log "RUN START roll=$Roll scanonly=$ScanOnly"
+Log "RUN START roll=$Roll project=$ProjName scanonly=$ScanOnly"
 
 # ------------------------------------------------------------- harvest
 $StatePath = Join-Path $Traces "state.json"
@@ -106,7 +128,7 @@ $AlreadyDone = @{}
 Get-ChildItem -Path $Pending, $Sent -Filter "*.json" -File -ErrorAction SilentlyContinue |
     ForEach-Object { $AlreadyDone[$_.BaseName] = $true }
 
-$RawDir = Join-Path $Traces "raw"   # snapshots written by save_trace.py inside Cowork sessions
+$RawDir = Join-Path $Traces "raw"   # snapshots written by the Stop/SessionEnd hooks
 $JsonlFiles = @()
 foreach ($rootDir in ($SearchRoots + $RawDir)) {
     if (Test-Path $rootDir) {
@@ -123,9 +145,11 @@ foreach ($file in $JsonlFiles) {
     #     folder name under .claude\projects — if the student ran `claude`
     #     inside the project folder, that name contains claude-code-project.
     #  2. Fallback: the transcript content references the project folder.
-    $dirMatch = ($file.Directory.Name -like "*$ProjectName*") -or ($file.Directory.FullName -eq $RawDir)
+    $enc = ($Root -replace "[^A-Za-z0-9]", "-")
+    $dirMatch = ($file.Directory.Name -eq $enc) -or ($file.Directory.FullName -eq $RawDir)
     if (-not $dirMatch) {
-        if (-not (Select-String -Path $file.FullName -Pattern $ProjectName -Quiet -SimpleMatch)) { continue }
+        $esc = $Root.Replace("\", "\\")
+        if (-not ((Select-String -Path $file.FullName -Pattern $Root -Quiet -SimpleMatch) -or (Select-String -Path $file.FullName -Pattern $esc -Quiet -SimpleMatch))) { continue }
     }
     $found++
 
@@ -206,6 +230,7 @@ foreach ($file in $JsonlFiles) {
         capture_version    = $CaptureVersion
         plugin_hash        = "harvester-ps1"
         roll_no            = $Roll
+        project_name       = $ProjName
         session_id         = $sessionId
         hook_event         = "harvest"
         client_captured_at = (Get-Date -Format "o")
@@ -239,6 +264,7 @@ foreach ($f in $pendingFiles) {
         $row = [ordered]@{
             session_id         = $envelope.session_id
             roll_no            = $envelope.roll_no
+            project_name       = $envelope.project_name
             title              = $envelope.title
             started_at         = $envelope.started_at
             ended_at           = $envelope.ended_at
