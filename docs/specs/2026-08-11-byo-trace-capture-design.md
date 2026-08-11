@@ -153,7 +153,12 @@ Triggered by "submit my trace", "save my work", "send my session to Cadra".
    `cadra-connect` — never guess.
 2. Collect (§6), transform (§7), redact (§8), and write `last-preview.json`.
 3. **Show the candidate a summary before sending**: sessions, turn counts, byte
-   size, and the redaction count. This is the consent surface.
+   size, the redaction count, and every directory each session visited
+   (`session.cwds`). This is the consent surface — a session that wandered
+   outside the workspace is visible here before anything leaves the machine.
+   Also report any sessions that **touched** the workspace but were started
+   elsewhere and are therefore excluded (§6.1), so a candidate is never silently
+   missing evidence.
 4. Submit per session, chunked (§9).
 5. Report the server's receipt verbatim — never a local claim of success.
 
@@ -175,24 +180,108 @@ falling back to a local guess.
 
 ### 6.1 Which sessions belong to the assessment
 
-**Rule: a session belongs to the assessment iff its recorded `cwd` is
-`workspace_root` or a descendant of it.** Every transcript entry carries `cwd`,
-`gitBranch` and `version`, so this is read from content, never inferred from the
-directory name.
+**Rule: a session belongs to the assessment iff its *origin cwd* — the `cwd` of
+the first entry that carries one — is `workspace_root` or a descendant of it. The
+session is then captured whole.**
 
-The encoded folder name cannot be used, on measured evidence:
+#### Why origin cwd, and not "its cwd"
 
-- **Incomplete.** Running `claude` from a subdirectory creates a *separate*
-  project folder. `C--Dev-cadra-dev` and `C--Dev-cadra-dev-cadra-prototype` are
-  two folders for one repo; matching only the workspace's own encoded name drops
-  every session started from a subdirectory.
-- **Over-inclusive.** The encoding maps non-alphanumerics to `-`, so prefix
-  matching `C--Dev-cadra-dev` also captures a sibling `C:/Dev/cadra-dev-other`.
-- **Not one-to-one.** A single folder held three unrelated cwds
-  (`C:/Dev/RDI`, `C:/Dev/RDI/rdi_demo`, `C:/Dev/RDI/lakehouse-iot-platform`).
+`cwd` is recorded per entry and tracks the agent's *current* directory, which
+moves during a session. Measured across 489 local transcripts, **27 files contain
+more than one cwd**, some with ten. One session in this very design work shows:
+
+```
+161x C:\Dev\cadra-dev
+490x C:\Dev\cadra-dev\cadra-prototype
+167x C:\Dev\cadra-dev\Cadra-Claude-Code-Plugin
+```
+
+So "the session's cwd" is not a single value, and a naive reading of the rule is
+undefined for roughly one session in eighteen. Three candidate rules were
+considered:
+
+| Rule | Rejected because |
+|---|---|
+| Any entry in scope → include session | Over-inclusive: one stray command inside the workspace pulls in an entire unrelated session |
+| Per-entry filtering | Splits `tool_use` from its `tool_result`, producing a transcript that breaks attestation pairing and reads as corrupt |
+| **Origin cwd decides; capture whole** | **Chosen** |
+
+Origin cwd is the directory `claude` was launched from — the candidate's own
+statement of what they were working on. It is cheap to read (present on the very
+first line in 91% of files), deterministic, and matches the mental model
+"the session I started in my workspace".
+
+#### The two consequences, both handled rather than hidden
+
+**A session may leave the workspace after starting in it.** The envelope's
+`session.cwds` lists every distinct cwd observed, so the server sees the
+excursion. Safety is already structural: §7.1 leaves out-of-workspace tool paths
+absolute, so `_GLOBAL_PATH_RE` discards them and nothing outside the workspace is
+ever attested. The pre-send preview shows `session.cwds`, so a candidate whose
+session wandered somewhere private can decline before anything is sent.
+
+**A session started outside the workspace is excluded, even if most of its work
+was inside.** This is the deliberate inverse of the old hook's
+walk-six-ancestors bug. To stop it being a silent loss, `cadra-submit` **reports**
+such sessions: *"3 sessions touched this workspace but were started elsewhere and
+were not included."* `cadra-connect` tells the candidate to launch `claude` from
+the workspace root.
 
 Git worktrees fall out correctly: a cwd under `<workspace>/.claude/worktrees/…`
 is a descendant, so it is included.
+
+### 6.1.1 Finding the files — the enumeration algorithm
+
+§6.1 is the predicate; this is how candidate files are found without reopening
+G3's wounds. Every clause below exists because its absence was a real bug.
+
+**Step 1 — candidate directories.** With
+`enc(p) = re.sub(r"[^A-Za-z0-9]", "-", str(p))`, consider only directories
+directly under `~/.claude/projects` whose name is `enc(workspace_root)` or begins
+with `enc(workspace_root) + "-"`.
+
+This is a *sound superset*: if a session's origin cwd is the workspace or a
+descendant, then `str(cwd)` starts with `str(workspace_root)`, so `enc(cwd)`
+starts with `enc(workspace_root)` — and for a descendant the next character is a
+path separator, which encodes to `-`. No in-scope session can be missed. It is
+deliberately not exact — a sibling `C:\Dev\ws-other` also matches — which Step 3
+resolves.
+
+Compare case-insensitively on Windows, and normalise `workspace_root` with
+`Path.resolve()` at connect time so the encoding is stable.
+
+**Step 2 — files within a candidate directory.** Exactly two globs, never a
+recursive walk:
+
+| Glob | Meaning |
+|---|---|
+| `<dir>/*.jsonl` | main session transcripts, one per session |
+| `<dir>/*/subagents/agent-*.jsonl` | subagent transcripts, attributed to the parent `<session-id>` taken from the path |
+
+Subagent files are **never** treated as sessions in their own right — that was the
+old plugin's bug, which swept them up as separate anonymous sessions with wrong
+IDs. Nothing else in the directory is read; in particular `tool-results/` is not,
+per the offload spike.
+
+**Step 3 — confirm the origin cwd per file.** Read lines only until the first
+entry carrying a `cwd` (capped at 50 lines or 256 KB, then treat as unreadable and
+report). Include the file only if that cwd satisfies §6.1, compared as **resolved
+paths** — `Path.is_relative_to` semantics, not string prefix, so `C:\Dev\ws` never
+matches `C:\Dev\ws-other`. Only in-scope files are then read in full.
+
+This bounds reading: files outside candidate directories are never opened at all,
+and files in candidate directories are read one line deep unless they qualify.
+
+**Explicitly forbidden.** Each of these was a real defect in the current plugin:
+
+- **No content substring matching.** The old harvester included any transcript
+  merely *containing* the workspace path as a string, uploading unrelated personal
+  sessions whole.
+- **No `rglob`.** It sweeps subagent files up as top-level sessions and reads
+  every transcript on the machine.
+- **No ancestor walking.** The old gate walked six levels up and one down.
+- **No other storage roots.** `local-agent-mode-sessions` under `%APPDATA%` /
+  `%LOCALAPPDATA%` is the Claude *desktop* app, not Claude Code.
 
 ### 6.2 Subagent transcripts
 
@@ -457,8 +546,17 @@ No test infrastructure exists in this repo today; it is added with the rewrite.
 - **Fixtures:** small synthetic transcript trees under `tests/fixtures/`, covering
   a main session, a subagent pair, absolute paths, tab-numbered reads, an embedded
   image, and a secret-bearing `.env` read.
-- **Scoping:** sessions in/out by recorded `cwd`; subdirectory cwd included;
-  sibling-prefix folder excluded; worktree cwd included.
+- **Scoping predicate (§6.1):** origin cwd equal to the workspace included; origin
+  cwd in a subdirectory included; origin cwd in a sibling directory whose *encoded
+  name shares the prefix* (`C:/Dev/ws-other`) excluded; worktree cwd included;
+  a session that starts in the workspace and later moves outside it is included
+  whole, with every cwd listed in `session.cwds`; a session that starts outside
+  and later enters the workspace is excluded **and reported**.
+- **Enumeration (§6.1.1):** only prefix-matching directories are opened — assert
+  by instrumenting file opens that an unrelated project directory is never
+  touched; a subagent file is attributed to its parent session and never emitted
+  as a session; `tool-results/` is not read; a file whose first 50 lines carry no
+  `cwd` is reported rather than silently dropped.
 - **Transformation:** each row of §7's table; path rebasing inside vs outside the
   workspace; subagent interleaving order and tagging.
 - **Extraction parity — the load-bearing test:** feed the transformed envelope to

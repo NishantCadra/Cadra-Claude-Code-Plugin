@@ -58,6 +58,14 @@ Where the bytes actually are — per content-block type and per JSONL entry type
 This is what showed `tool_result` to be 79% of the payload and that "thinking"
 cost is entirely the `signature` field, not reasoning text.
 
+## `cwd_homogeneity_check.py`
+
+Answers whether a transcript file has one `cwd` or several — the measurement
+behind §6.1's origin-cwd rule. Result: 27 of 489 files carry more than one cwd
+(some ten), because `cwd` tracks the agent's current directory as it moves during
+a session. Also reports how often the first line already carries a `cwd` (91%),
+which is what makes the one-line scoping probe in §6.1.1 cheap.
+
 ## `cwd_scoping_check.py`
 
 Shows that transcripts record their own `cwd`, that one project folder can hold
