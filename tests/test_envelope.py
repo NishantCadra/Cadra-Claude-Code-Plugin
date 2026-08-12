@@ -81,3 +81,13 @@ def test_a_dropped_or_reordered_chunk_breaks_the_chain():
     assert not replay([chunks[0], chunks[2], chunks[1]] + chunks[3:])  # reordered
     tampered = [(chunks[0][0], chunks[0][1][:-1])] + chunks[1:]
     assert not replay(tampered)                          # altered chunk body
+
+
+def test_tool_result_cap_is_a_byte_budget_not_a_character_count():
+    """A character slice of CJK text would emit ~3x the cap it enforces."""
+    body = "".join("経" for _ in range(envelope.TOOL_RESULT_CAP))  # 3 bytes each
+    messages = [{"role": "tool", "tool_call_id": "t1", "content": body}]
+    out, _paths = envelope.apply_size_controls(messages)
+    size = len(out[0]["content"].encode("utf-8"))
+    assert size <= envelope.TOOL_RESULT_CAP + len(envelope.TRUNCATION_MARKER) + 2
+    assert envelope.TRUNCATION_MARKER in out[0]["content"]

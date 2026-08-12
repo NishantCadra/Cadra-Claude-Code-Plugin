@@ -1280,7 +1280,8 @@ git commit -m "feat: vendor client-side secret redaction"
 - Test: `tests/test_envelope.py`
 
 **Interfaces:**
-- Consumes: `cadra.adapt`, `cadra.redact`.
+- Consumes: nothing. It operates on already-transformed messages, so it imports
+  neither `cadra.adapt` nor `cadra.redact`; Task 6 is what wires the order.
 - Produces:
   - `MAX_WRITE_LINES = 2000`, `TOOL_RESULT_CAP = 64 * 1024`, `CHUNK_BYTES = 4 * 1024 * 1024`
   - `apply_size_controls(messages: list[dict]) -> tuple[list[dict], set[str]]`

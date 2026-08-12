@@ -32,10 +32,16 @@ def apply_size_controls(messages: list[dict]) -> tuple[list[dict], set[str]]:
         if not isinstance(message, dict):
             continue
         content = message.get("content")
-        if (message.get("role") == "tool" and isinstance(content, str)
-                and len(content.encode("utf-8")) > TOOL_RESULT_CAP):
-            half = TOOL_RESULT_CAP // 2
-            message["content"] = f"{content[:half]}\n{TRUNCATION_MARKER}\n{content[-half:]}"
+        if message.get("role") == "tool" and isinstance(content, str):
+            encoded = content.encode("utf-8")
+            if len(encoded) > TOOL_RESULT_CAP:
+                # Slice bytes, not characters: TOOL_RESULT_CAP is a byte budget,
+                # and one CJK character is three bytes, so a character slice
+                # would overshoot the cap it exists to enforce.
+                half = TOOL_RESULT_CAP // 2
+                head = encoded[:half].decode("utf-8", errors="ignore")
+                tail = encoded[-half:].decode("utf-8", errors="ignore")
+                message["content"] = f"{head}\n{TRUNCATION_MARKER}\n{tail}"
         for call in message.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
