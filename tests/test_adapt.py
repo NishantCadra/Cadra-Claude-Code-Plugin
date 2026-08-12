@@ -1,7 +1,9 @@
 """Claude Code -> canonical OpenAI-style envelope (§7)."""
+import json
 from pathlib import Path
 
 from cadra import adapt
+from tests.conftest import write_jsonl
 
 
 def _assistant(blocks, ts="2026-08-11T09:00:00Z", **over):
@@ -84,3 +86,56 @@ def test_non_conversation_entry_types_are_dropped():
                ("mode", "permission-mode", "ai-title", "file-history-snapshot",
                 "attachment", "queue-operation", "agent-name", "last-prompt")]
     assert adapt.to_messages(entries, WS) == []
+
+
+def _sub_session(transcripts: Path, workspace: Path, meta: dict | None):
+    """A one-session tree with a single subagent, optionally with a sidecar."""
+    from cadra import collect
+    enc = collect.encode_dir_name(workspace)
+    base = {"cwd": str(workspace), "sessionId": "s1",
+            "timestamp": "2026-08-11T09:00:00Z"}
+    write_jsonl(transcripts / enc / "s1.jsonl",
+                [{**base, "type": "user",
+                  "message": {"role": "user", "content": "main"}}])
+    write_jsonl(transcripts / enc / "s1" / "subagents" / "agent-a1.jsonl",
+                [{**base, "type": "assistant", "timestamp": "2026-08-11T09:00:01Z",
+                  "message": {"role": "assistant",
+                              "content": [{"type": "text", "text": "sub"}]}}])
+    if meta is not None:
+        sidecar = transcripts / enc / "s1" / "subagents" / "agent-a1.meta.json"
+        sidecar.write_text(json.dumps(meta), encoding="utf-8")
+    sessions, _notes = collect.discover(transcripts, workspace)
+    return sessions[0]
+
+
+def test_subagent_messages_carry_the_real_agent_type_and_parent_call(
+    transcripts: Path, workspace: Path
+):
+    """The sidecar has both fields; emitting a literal 'subagent' would throw
+    away which agent actually did the work (§7)."""
+    session = _sub_session(transcripts, workspace,
+                           {"agentType": "code-reviewer",
+                            "toolUseId": "toolu_01Kai", "description": "review"})
+    messages, _meta = adapt.load_session(session, workspace)
+    main = [m for m in messages if "cadra_agent" not in m]
+    sub = [m for m in messages if "cadra_agent" in m]
+    assert [m["content"] for m in main] == ["main"]
+    assert sub[0]["cadra_agent"] == {"parent_tool_use_id": "toolu_01Kai",
+                                     "agent_type": "code-reviewer"}
+
+
+def test_missing_sidecar_still_tags_the_message_without_inventing_a_parent(
+    transcripts: Path, workspace: Path
+):
+    session = _sub_session(transcripts, workspace, None)
+    messages, _meta = adapt.load_session(session, workspace)
+    sub = [m for m in messages if "cadra_agent" in m]
+    assert sub[0]["cadra_agent"] == {"agent_type": "subagent"}
+
+
+def test_main_transcript_messages_are_never_tagged(
+    transcripts: Path, workspace: Path
+):
+    session = _sub_session(transcripts, workspace, {"agentType": "general-purpose"})
+    messages, _meta = adapt.load_session(session, workspace)
+    assert "cadra_agent" not in messages[0]

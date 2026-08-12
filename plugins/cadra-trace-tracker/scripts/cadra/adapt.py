@@ -60,8 +60,22 @@ def _flatten_result(content: object) -> str:
     return "\n".join(parts)
 
 
+def agent_tag(meta: dict) -> dict:
+    """`cadra_agent` for a subagent message (§7). Only fields actually present:
+    an absent parent id is left out rather than guessed at."""
+    tag: dict = {}
+    if isinstance(meta.get("toolUseId"), str) and meta["toolUseId"]:
+        tag["parent_tool_use_id"] = meta["toolUseId"]
+    agent_type = meta.get("agentType")
+    tag["agent_type"] = agent_type if isinstance(agent_type, str) and agent_type else "subagent"
+    return tag
+
+
 def to_messages(entries: list[dict], workspace: Path,
-                subagent: bool = False) -> list[dict]:
+                agent: dict | None = None) -> list[dict]:
+    """`agent` is the `cadra_agent` tag for subagent entries, None for the main
+    transcript. The server's extractor ignores it (§7); it exists so a human
+    reading the trace can tell which agent did what."""
     messages: list[dict] = []
     for entry in entries:
         if not isinstance(entry, dict):
@@ -78,6 +92,8 @@ def to_messages(entries: list[dict], workspace: Path,
                 out = {"role": role, "content": content}
                 if isinstance(ts, str) and ts:
                     out["client_ts"] = ts
+                if agent:
+                    out["cadra_agent"] = agent
                 messages.append(out)
             continue
         if not isinstance(content, list):
@@ -100,11 +116,10 @@ def to_messages(entries: list[dict], workspace: Path,
                     for key in PATH_ARG_KEYS:
                         if isinstance(args.get(key), str):
                             args[key] = rebase_path(args[key], workspace)
-                    call = {"id": block.get("id"), "type": "function",
-                            "function": {"name": block.get("name"), "arguments": args}}
-                    if subagent:
-                        call["cadra_agent"] = {"agent_type": "subagent"}
-                    tool_calls.append(call)
+                    tool_calls.append({
+                        "id": block.get("id"), "type": "function",
+                        "function": {"name": block.get("name"), "arguments": args},
+                    })
             out = {"role": "assistant"}
             if texts:
                 out["content"] = "\n".join(texts)
@@ -113,6 +128,8 @@ def to_messages(entries: list[dict], workspace: Path,
             if len(out) > 1:
                 if isinstance(ts, str) and ts:
                     out["client_ts"] = ts
+                if agent:
+                    out["cadra_agent"] = agent
                 messages.append(out)
 
         elif role == "user":
@@ -130,6 +147,8 @@ def to_messages(entries: list[dict], workspace: Path,
                     continue
                 if isinstance(ts, str) and ts:
                     out["client_ts"] = ts
+                if agent:
+                    out["cadra_agent"] = agent
                 messages.append(out)
     return messages
 
@@ -156,26 +175,27 @@ def _read_entries(path: Path) -> list[dict]:
 def load_session(session: Session, workspace: Path) -> tuple[list[dict], dict]:
     """Main transcript plus subagents, interleaved by timestamp (§6.2)."""
     main = _read_entries(session.main_file)
-    tagged: list[tuple[str, dict, bool]] = [
-        (str(e.get("timestamp") or ""), e, False) for e in main
+    tagged: list[tuple[str, dict, dict | None]] = [
+        (str(e.get("timestamp") or ""), e, None) for e in main
     ]
     for sub_file in session.subagent_files:
+        tag = agent_tag(session.subagent_meta.get(sub_file.stem) or {})
         for entry in _read_entries(sub_file):
-            tagged.append((str(entry.get("timestamp") or ""), entry, True))
+            tagged.append((str(entry.get("timestamp") or ""), entry, tag))
     tagged.sort(key=lambda item: item[0])
 
     messages: list[dict] = []
     cwds: list[str] = []
     version = ""
-    for _ts, entry, is_sub in tagged:
+    for _ts, entry, tag in tagged:
         cwd = entry.get("cwd")
         if isinstance(cwd, str) and cwd and cwd not in cwds:
             cwds.append(cwd)
         if not version and isinstance(entry.get("version"), str):
             version = entry["version"]
-        messages.extend(to_messages([entry], workspace, subagent=is_sub))
+        messages.extend(to_messages([entry], workspace, agent=tag))
 
-    stamps = [t for t, _e, _s in tagged if t]
+    stamps = [t for t, _e, _tag in tagged if t]
     meta = {"cwds": cwds, "started_at": stamps[0] if stamps else None,
             "ended_at": stamps[-1] if stamps else None, "agent_version": version}
     return messages, meta

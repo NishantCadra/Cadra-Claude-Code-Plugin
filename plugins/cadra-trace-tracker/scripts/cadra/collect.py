@@ -91,6 +91,23 @@ class Session:
     main_file: Path
     origin_cwd: str
     subagent_files: list[Path] = field(default_factory=list)
+    #: agent-<id> -> its sidecar meta ({agentType, toolUseId, description}).
+    #: Missing or unreadable sidecars are simply absent, never fabricated.
+    subagent_meta: dict[str, dict] = field(default_factory=dict)
+
+
+def _read_agent_meta(jsonl: Path) -> dict:
+    """The `agent-<id>.meta.json` sitting beside a subagent transcript.
+
+    It carries the parent `toolUseId` and the real `agentType`, which is what
+    lets the server attribute subagent work (§7 `cadra_agent`)."""
+    sidecar = jsonl.with_suffix(".meta.json")
+    try:
+        with open_text(sidecar, encoding="utf-8", errors="ignore") as handle:
+            meta = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
 
 
 def discover(projects_root: Path, workspace: Path) -> tuple[list[Session], list[str]]:
@@ -112,6 +129,9 @@ def discover(projects_root: Path, workspace: Path) -> tuple[list[Session], list[
             subagents = sorted(
                 (directory / session_id / "subagents").glob("agent-*.jsonl")
             )
-            sessions.append(Session(session_id=session_id, main_file=main_file,
-                                    origin_cwd=cwd, subagent_files=list(subagents)))
+            sessions.append(Session(
+                session_id=session_id, main_file=main_file, origin_cwd=cwd,
+                subagent_files=list(subagents),
+                subagent_meta={f.stem: _read_agent_meta(f) for f in subagents},
+            ))
     return sessions, notes
