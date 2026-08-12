@@ -38,7 +38,7 @@ def test_submission_posts_the_expected_envelope(connected: Path, transcripts: Pa
 
     def _post(*, base_url, token, body):
         sent.append(body)
-        return 202, {"accepted": True, "session_id": body["session_id"],
+        return 202, {"accepted": True, "session_id": body["session"]["session_id"],
                      "messages": len(body["messages"]), "received_at": "now"}
 
     monkeypatch.setattr(cadra_submit.client, "post_chunk", _post)
@@ -46,7 +46,7 @@ def test_submission_posts_the_expected_envelope(connected: Path, transcripts: Pa
                               "--projects-root", str(transcripts)])
     assert code == 0
     body = sent[0]
-    assert body["session_id"] == "sess1"
+    assert body["session"]["session_id"] == "sess1"
     assert "assessment_id" not in body          # identity comes from the token
     assert body["binding"]["git_remote"] == "https://github.com/c/s.git"
     assert body["agent"]["name"] == "claude-code"
@@ -100,3 +100,79 @@ def test_unconnected_workspace_points_at_connect(workspace: Path, transcripts: P
                               "--projects-root", str(transcripts)])
     assert code == 1
     assert "cadra-connect" in capsys.readouterr().out
+
+
+def test_envelope_matches_the_canonical_shape(connected: Path, transcripts: Path,
+                                              monkeypatch):
+    """§7.4 is the contract the unbuilt proxy will be written against, so a
+    flat variant here would be a silent break nobody notices until integration."""
+    sent: list[dict] = []
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda *, base_url, token, body: (sent.append(body),
+                                                          (202, {"messages": 0}))[1])
+    cadra_submit.main(["--workspace", str(connected),
+                       "--projects-root", str(transcripts)])
+    body = sent[0]
+    assert set(body) == {"capture_version", "agent", "session", "binding",
+                         "chunk", "redaction", "truncated_paths", "messages"}
+    assert set(body["session"]) == {"session_id", "started_at", "ended_at", "cwds"}
+    assert set(body["binding"]) == {"workspace_root", "git_remote", "git_branch"}
+    assert set(body["chunk"]) == {"index", "total", "prefix_hash", "chunk_hash"}
+    assert set(body["redaction"]) == {"rules_version", "redacted_count"}
+
+
+def test_dry_run_sends_nothing_and_advances_no_state(connected: Path,
+                                                     transcripts: Path,
+                                                     monkeypatch, capsys):
+    """The preview is only a consent control if it happens BEFORE the send (§6.1)."""
+    def _boom(**_kw):
+        raise AssertionError("dry run must not reach the network")
+
+    monkeypatch.setattr(cadra_submit.client, "post_chunk", _boom)
+    code = cadra_submit.main(["--workspace", str(connected),
+                              "--projects-root", str(transcripts), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "DRY-RUN" in out
+    assert not (config.config_dir(connected) / "state.json").exists()
+    preview = json.loads(
+        (config.config_dir(connected) / "last-preview.json").read_text(encoding="utf-8"))
+    assert preview["sessions"][0]["message_count"] == 2
+
+
+def test_dry_run_preview_is_what_a_real_submit_sends(connected: Path,
+                                                     transcripts: Path, monkeypatch):
+    """§11: the preview must be byte-identical to the payload, or it is theatre."""
+    cadra_submit.main(["--workspace", str(connected),
+                       "--projects-root", str(transcripts), "--dry-run"])
+    preview = json.loads(
+        (config.config_dir(connected) / "last-preview.json").read_text(encoding="utf-8"))
+
+    sent: list[dict] = []
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda *, base_url, token, body: (sent.append(body),
+                                                          (202, {"messages": 0}))[1])
+    cadra_submit.main(["--workspace", str(connected),
+                       "--projects-root", str(transcripts)])
+    assert preview["sessions"][0]["messages"] == sent[0]["messages"]
+
+
+def test_malformed_lines_are_counted_and_reported_not_fatal(
+    connected: Path, transcripts: Path, monkeypatch, capsys
+):
+    """§10: skip the line, count it, report the count — never abort."""
+    from cadra import collect
+    enc = collect.encode_dir_name(Path(str(connected)).resolve())
+    path = transcripts / enc / "sess1.jsonl"
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+        handle.write('"a bare string, not an entry"\n')
+
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda *, base_url, token, body: (202, {"messages": 0}))
+    code = cadra_submit.main(["--workspace", str(connected),
+                              "--projects-root", str(transcripts)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "2 unreadable line(s) skipped" in out
+    assert "SUBMITTED" in out

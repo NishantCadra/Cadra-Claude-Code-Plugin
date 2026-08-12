@@ -153,8 +153,14 @@ def to_messages(entries: list[dict], workspace: Path,
     return messages
 
 
-def _read_entries(path: Path) -> list[dict]:
+def _read_entries(path: Path) -> tuple[list[dict], int]:
+    """-> (entries, unreadable line count).
+
+    A malformed line is skipped, never fatal (§10) — but it is counted and
+    surfaced, because a transcript that is quietly half-read looks exactly like
+    a candidate who did less work."""
     entries: list[dict] = []
+    bad = 0
     try:
         with open(path, encoding="utf-8", errors="ignore") as handle:
             for line in handle:
@@ -164,23 +170,28 @@ def _read_entries(path: Path) -> list[dict]:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
+                    bad += 1
                     continue
                 if isinstance(entry, dict):
                     entries.append(entry)
+                else:
+                    bad += 1
     except OSError:
-        return entries
-    return entries
+        return entries, bad + 1
+    return entries, bad
 
 
 def load_session(session: Session, workspace: Path) -> tuple[list[dict], dict]:
     """Main transcript plus subagents, interleaved by timestamp (§6.2)."""
-    main = _read_entries(session.main_file)
+    main, unreadable = _read_entries(session.main_file)
     tagged: list[tuple[str, dict, dict | None]] = [
         (str(e.get("timestamp") or ""), e, None) for e in main
     ]
     for sub_file in session.subagent_files:
         tag = agent_tag(session.subagent_meta.get(sub_file.stem) or {})
-        for entry in _read_entries(sub_file):
+        sub_entries, sub_bad = _read_entries(sub_file)
+        unreadable += sub_bad
+        for entry in sub_entries:
             tagged.append((str(entry.get("timestamp") or ""), entry, tag))
     tagged.sort(key=lambda item: item[0])
 
@@ -197,5 +208,6 @@ def load_session(session: Session, workspace: Path) -> tuple[list[dict], dict]:
 
     stamps = [t for t, _e, _tag in tagged if t]
     meta = {"cwds": cwds, "started_at": stamps[0] if stamps else None,
-            "ended_at": stamps[-1] if stamps else None, "agent_version": version}
+            "ended_at": stamps[-1] if stamps else None, "agent_version": version,
+            "unreadable_lines": unreadable}
     return messages, meta

@@ -10,17 +10,36 @@ them as unattested (§8.1).
 
 The server is the authority on success: nothing is written to `state.json` for a
 session until every one of its chunks has been accepted.
+
+`--dry-run` runs the whole pipeline and writes the preview but sends nothing.
+That is what makes the preview *pre*-send (§6.1): a session may leave the
+workspace after starting in it, and the candidate has to be able to see where it
+went and decline before anything leaves the machine.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 from cadra import adapt, client, collect, config, envelope, redact
 
 CAPTURE_VERSION = "3.0.0"
+
+
+def git_branch(workspace: Path) -> str | None:
+    """Read at submit time, not from config: the branch moves, the remote does not."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    branch = out.stdout.strip()
+    return branch or None
 
 
 def _projects_root(override: str | None) -> Path:
@@ -50,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", default=".")
     parser.add_argument("--projects-root", default=None)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="build and preview the payload; send nothing")
     args = parser.parse_args(argv)
 
     workspace = config.find_workspace(Path(args.workspace))
@@ -59,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     cfg = config.load(workspace)
     state = _load_state(workspace)
+    branch = git_branch(workspace)
 
     sessions, notes = collect.discover(_projects_root(args.projects_root), workspace)
     for note in notes:
@@ -93,6 +115,19 @@ def main(argv: list[str] | None = None) -> int:
             # the machine (§4: "exactly what the last submit sent").
             "messages": messages,
         })
+        for cwd in meta["cwds"]:
+            print(f"CWD {session.session_id[:8]} — {cwd}")
+        if meta["unreadable_lines"]:
+            # Never fatal, never silent (§10): a partially readable transcript
+            # otherwise looks identical to a candidate who did less work.
+            print(f"NOTE {session.session_id[:8]}: {meta['unreadable_lines']} "
+                  "unreadable line(s) skipped")
+
+        if args.dry_run:
+            print(f"DRY-RUN {session.session_id[:8]} — {len(messages)} messages, "
+                  f"{len(chunks)} chunk(s), {redacted_count} redaction(s). "
+                  "Nothing was sent.")
+            continue
 
         receipt: dict = {}
         ok = True
@@ -100,12 +135,16 @@ def main(argv: list[str] | None = None) -> int:
             body = {
                 "capture_version": CAPTURE_VERSION,
                 "agent": {"name": "claude-code", "version": meta["agent_version"]},
-                "session_id": session.session_id,
-                "started_at": meta["started_at"], "ended_at": meta["ended_at"],
-                "cwds": meta["cwds"],
-                "workspace_root": str(workspace).replace("\\", "/"),
+                # Shape is §7.4 verbatim. The companion ingest spec defers to it
+                # as the canonical envelope, so a flat variant here would be a
+                # silent contract break with a server that is not written yet.
+                "session": {"session_id": session.session_id,
+                            "started_at": meta["started_at"],
+                            "ended_at": meta["ended_at"],
+                            "cwds": meta["cwds"]},
                 "binding": {"workspace_root": str(workspace).replace("\\", "/"),
-                            "git_remote": cfg.get("git_remote")},
+                            "git_remote": cfg.get("git_remote"),
+                            "git_branch": branch},
                 "chunk": chunk_meta,
                 "redaction": {"rules_version": redact.RULES_VERSION,
                               "redacted_count": redacted_count},
@@ -141,6 +180,13 @@ def main(argv: list[str] | None = None) -> int:
     with open(config.config_dir(workspace) / "last-preview.json", "w",
               encoding="utf-8") as handle:
         json.dump(preview, handle, indent=2)
+
+    if args.dry_run:
+        # No send happened, so nothing may be marked submitted.
+        print("DRY-RUN complete — nothing was sent. Review "
+              ".cadra/last-preview.json, then submit for real to send it.")
+        return 0
+
     _save_state(workspace, state)
 
     if submitted == 0 and failures == 0:

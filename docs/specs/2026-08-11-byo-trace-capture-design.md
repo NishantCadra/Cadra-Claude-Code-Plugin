@@ -71,7 +71,7 @@ The plugin is repurposed, not extended. Deleted outright:
   .cadra/
     config.json       ← token, assessment binding      (chmod 0600 on POSIX)
     state.json        ← per-session submission cursor
-    last-preview.json ← exactly what the last submit sent, for inspection
+    last-preview.json ← exactly what submit would send / did send (§5.2 step 2)
 ```
 
 **Invariant — enforced in review and tests:**
@@ -152,14 +152,19 @@ Triggered by "submit my trace", "save my work", "send my session to Cadra".
    therefore resolve to the innermost one. If none is found, stop and point at
    `cadra-connect` — never guess.
 2. Collect (§6), transform (§7), redact (§8), and write `last-preview.json`.
+   This is `cadra_submit.py --dry-run`: the full pipeline with the network step
+   omitted, so the preview is genuinely *pre*-send rather than a record of what
+   already left.
 3. **Show the candidate a summary before sending**: sessions, turn counts, byte
    size, the redaction count, and every directory each session visited
    (`session.cwds`). This is the consent surface — a session that wandered
    outside the workspace is visible here before anything leaves the machine.
-   Also report any sessions that **touched** the workspace but were started
-   elsewhere and are therefore excluded (§6.1), so a candidate is never silently
-   missing evidence.
-4. Submit per session, chunked (§9).
+   The skill must not proceed without the candidate's agreement; a preview they
+   are shown after the upload is not consent. Also state the session count even
+   when it is zero, so a candidate who launched `claude` from the wrong
+   directory sees it (§6.1).
+4. Submit per session, chunked (§9) — a second run of the same script without
+   `--dry-run`.
 5. Report the server's receipt verbatim — never a local claim of success.
 
 Submission is idempotent: resubmitting an unchanged session is a no-op server-side,
