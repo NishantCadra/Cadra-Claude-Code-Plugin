@@ -123,3 +123,76 @@ def test_path_arguments_are_left_alone():
     args = out[0]["tool_calls"][0]["function"]["arguments"]
     assert args["file_path"].endswith("_x1.py")
     assert paths == set()
+
+
+from cadra.redact import SECRET_FILE_MARKER, is_secret_file  # noqa: E402
+
+
+def _read_pair(name: str, body: str, tool: str = "Read") -> list[dict]:
+    return [
+        {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function",
+         "function": {"name": tool, "arguments": {"file_path": name}}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": body},
+    ]
+
+
+ENV_BODY = """DATABASE_URL=postgres://app:hunter2@db.internal:5432/prod
+SMTP_PASS=Tr0ub4dor&3
+REDIS_URL=redis://:c4ch3p455@10.0.1.7:6379"""
+
+
+def test_reading_an_env_file_drops_the_whole_body():
+    """None of these three lines is caught by the pattern rules: SMTP_PASS is not
+    `password`, and the other two hide the secret inside a URL."""
+    messages, _paths, count = redact_messages(_read_pair(".env", ENV_BODY))
+    body = messages[1]["content"]
+    assert count == 1
+    assert body.startswith(SECRET_FILE_MARKER)
+    for secret in ("hunter2", "Tr0ub4dor&3", "c4ch3p455"):
+        assert secret not in body
+
+
+def test_catting_an_env_file_drops_the_body_too():
+    """`cat .env` has no path argument, and is at least as common as a Read."""
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function",
+         "function": {"name": "Bash", "arguments": {"command": "cat .env"}}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": ENV_BODY},
+    ]
+    messages, _paths, _count = redact_messages(messages)
+    assert messages[1]["content"].startswith(SECRET_FILE_MARKER)
+
+
+def test_writing_a_secrets_file_is_dropped_and_reported_as_truncated():
+    """A write puts the contents in the transcript just as a read does — but it
+    also changes what attestation hashes, so the path must be reported (§8.1)."""
+    pair = _read_pair(".env.local", "", tool="Write")
+    pair[0]["tool_calls"][0]["function"]["arguments"]["content"] = ENV_BODY
+    messages, paths, _count = redact_messages(pair)
+    args = messages[0]["tool_calls"][0]["function"]["arguments"]
+    assert args["content"] == SECRET_FILE_MARKER
+    assert paths == {".env.local"}
+
+
+def test_env_templates_are_kept():
+    """Placeholders, not secrets. Reading .env.example is orientation work worth
+    crediting, and dropping it would be pure loss."""
+    body = "DATABASE_URL=postgres://user:password@localhost:5432/dbname"
+    messages, _paths, _count = redact_messages(_read_pair(".env.example", body))
+    assert SECRET_FILE_MARKER not in messages[1]["content"]
+
+
+def test_ordinary_source_files_are_untouched_by_the_file_rule():
+    body = "def main():\n    return 1\n"
+    messages, _paths, _count = redact_messages(_read_pair("src/main.py", body))
+    assert messages[1]["content"] == body
+
+
+def test_which_paths_count_as_secret_files():
+    for path in (".env", ".env.local", ".env.production", "C:/w/.env",
+                 "certs/server.pem", "deploy.key", "~/.ssh/id_rsa",
+                 "id_ed25519", "app.p12"):
+        assert is_secret_file(path), path
+    for path in (".env.example", ".env.sample", ".env.template", "keys.md",
+                 "src/environment.ts", "monkey.py", "README.md", ""):
+        assert not is_secret_file(path), path

@@ -455,7 +455,7 @@ missing its sentinels fails the check rather than being skipped. Envelope field
 
 | Class | Action |
 |---|---|
-| `.env`-family file reads (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`) | Drop the tool result body entirely, keep the path |
+| `.env`-family files (`.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`) — **read, written, or named in a shell command** | Drop the body entirely, keep the path |
 | Token shapes (`sk-…`, `ghp_…`, `github_pat_…`, `AKIA…`, `xox[baprs]-…`, JWT triples) | Replace with `[redacted:<class>]` |
 | Assignments matching `(?i)(api[_-]?key|secret|token|password|passwd|credential)\s*[=:]\s*\S+` | Redact the value, keep the key |
 | High-entropy strings: ≥32 chars, single token (no whitespace), drawn from `[A-Za-z0-9+/=_-]`, Shannon entropy ≥ 4.0 bits/char, and **not** matching a known-safe shape (git SHA, UUID, content hash, data-URI payload, file path) | Replace with `[redacted:entropy]` |
@@ -467,9 +467,34 @@ Redaction runs **after** transformation and **before** chunking, so
 Every redaction increments `redacted_count`, surfaced in the pre-send summary. The
 candidate sees "12 secrets redacted" and can inspect `last-preview.json`.
 
+**Why the first rule matches on identity, not content.** Every other rule is a
+pattern matcher, and a pattern matcher catches only what it recognises. Measured
+against a realistic `.env`, six of seven lines survived the other four rules:
+`SMTP_PASS=` is missed because the assignment keyword list has `password` and
+`passwd` but not `pass`, and `postgres://app:pw@host` and `redis://:pw@host` are
+missed because the secret sits inside a URL rather than after the `=`. Extending
+the keyword list is an arms race against a filename that already tells you the
+answer. So these files are dropped whole, unexamined.
+
+Three deliberate details:
+
+- **Writes count, not only reads.** Writing a secrets file puts its contents in
+  the transcript exactly as reading one does. Because a dropped write body
+  changes the lines attestation hashes, that path is reported as truncated
+  (§8.1) — the file leaves the coverage denominator. A read costs nothing, since
+  tool results are never hashed.
+- **Shell commands count.** `cat .env` has no path argument and is at least as
+  common as a `Read`. Matched on a filename token in the command text, which is
+  coarse on purpose: a false positive costs one tool result, a false negative
+  costs a live credential.
+- **Templates are kept.** `.env.example`, `.env.sample`, `.env.template`,
+  `.env.dist` hold placeholders. Reading one is orientation work worth crediting,
+  and dropping it would be pure loss.
+
 **Known limit, stated rather than papered over:** pattern-based redaction is
-best-effort. A secret in an unrecognised format survives. This is why the proxy
-re-scans (D6), and why the candidate preview exists.
+best-effort. A secret in an unrecognised format, in a file with an unremarkable
+name, survives. This is why the proxy re-scans (D6), and why the candidate
+preview exists.
 
 ### 8.1 Redaction vs attestation — a real conflict
 
