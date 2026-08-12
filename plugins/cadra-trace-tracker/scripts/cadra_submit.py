@@ -20,26 +20,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
-from cadra import adapt, client, collect, config, envelope, redact
+from cadra import adapt, client, collect, config, envelope, redact, repo
 
 CAPTURE_VERSION = "3.0.0"
-
-
-def git_branch(workspace: Path) -> str | None:
-    """Read at submit time, not from config: the branch moves, the remote does not."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(workspace), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    branch = out.stdout.strip()
-    return branch or None
 
 
 def _projects_root(override: str | None) -> Path:
@@ -63,6 +49,17 @@ def _save_state(workspace: Path, state: dict) -> None:
     config.config_dir(workspace).mkdir(parents=True, exist_ok=True)
     with open(_state_path(workspace), "w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2)
+
+
+def current_remote(workspace: Path, cfg: dict) -> str | None:
+    """The remote as it is now, not as it was at connect.
+
+    It legitimately moves during an assessment: the candidate clones the
+    template repo, works for days, then creates their own repo and re-points
+    origin. Reporting the connect-time value would describe a repo they have
+    since left. Falls back to the recorded one only when git cannot answer.
+    """
+    return repo.git_remote(workspace) or cfg.get("git_remote")
 
 
 def _previewed_cwds(start: Path) -> dict[str, list[str]]:
@@ -104,7 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     cfg = config.load(workspace)
     state = _load_state(workspace)
-    branch = git_branch(workspace)
+    branch = repo.git_branch(workspace)
+    remote = current_remote(workspace, cfg)
 
     sessions, notes = collect.discover(_projects_root(args.projects_root), workspace)
     for note in notes:
@@ -183,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                             "ended_at": meta["ended_at"],
                             "cwds": meta["cwds"]},
                 "binding": {"workspace_root": str(workspace).replace("\\", "/"),
-                            "git_remote": cfg.get("git_remote"),
+                            "git_remote": remote,
                             "git_branch": branch},
                 "chunk": chunk_meta,
                 "redaction": {"rules_version": redact.RULES_VERSION,

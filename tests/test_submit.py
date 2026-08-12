@@ -251,3 +251,21 @@ def test_a_directory_entered_after_the_preview_is_called_out(
     assert "NEW-CWD" in out
     assert "private-notes" in out
     assert "entered after the preview you approved" in out
+
+
+def test_the_remote_is_read_at_submit_time_not_frozen_at_connect(
+    connected: Path, transcripts: Path, monkeypatch
+):
+    """The candidate clones the template, works, then creates their own repo and
+    re-points origin. Sending the connect-time value would name a repo they left."""
+    monkeypatch.setattr(cadra_submit.repo, "git_remote",
+                        lambda ws: "https://github.com/candidate/solution.git")
+    sent: list[dict] = []
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda *, base_url, token, body: (sent.append(body),
+                                                          (202, {"messages": 0}))[1])
+    cadra_submit.main(["--workspace", str(connected),
+                       "--projects-root", str(transcripts)])
+    # The fixture's config.json records github.com/c/s.git from connect time.
+    assert sent[0]["binding"]["git_remote"] == \
+        "https://github.com/candidate/solution.git"

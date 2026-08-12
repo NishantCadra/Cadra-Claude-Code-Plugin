@@ -60,8 +60,8 @@ the cadra-connect skill instead.
      by any `HINT` line the script printed. Common cases: no internet (retry
      later, nothing is lost); an unaccepted token (re-run cadra-connect with a
      fresh one); `rejected_revoked` or `rejected_expired` (contact the program
-     team); `binding_mismatch` (this workspace's git remote differs from the one
-     registered).
+     team); `binding_mismatch` (this workspace's folder name differs from the one
+     registered — the candidate has most likely connected a different project).
    - "Everything is already submitted" → say exactly that.
 
 5. If the user asks what was sent, point them at `.cadra/last-preview.json`, which

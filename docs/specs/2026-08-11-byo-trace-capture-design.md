@@ -143,6 +143,49 @@ Re-running is supported and expected: tokens get reissued, and candidates change
 machines. A re-connect that changes `git_remote` is accepted locally; the server
 decides whether to flag it.
 
+#### What `binding` is for, and what it cannot do
+
+`git_remote` and `git_branch` are **read fresh at submit time**, never taken from
+`config.json`. The remote is not stable across an assessment, and its instability
+is the ordinary path rather than an anomaly: Setup hands the candidate a *template*
+repo, and they push to a public repo of their own at the end. So across one
+assessment `origin` can be absent (they downloaded the template), then the
+template, then their own repo.
+
+That has a consequence the ingest design has to absorb: **the remote cannot be a
+record-time gate.** The authority it would be checked against —
+`coding_assessment_runs.repo_url` — is created by `POST /coding-assessments/{id}/submit`,
+the same call that flips the assessment to `submitted` and starts grading. It does
+not exist while traces are arriving. A trust-on-first-use rule over the remote
+would therefore compare against nothing but the candidate's own earlier claim, and
+would reject the template→own-repo transition, which is correct behaviour.
+
+So the remote is **evidence, reconciled at grade time**: record every remote a
+submission was captured under, never reject on it, and when `repo_url` finally
+arrives, compare. Traces captured entirely against an unrelated repo are a real
+provenance signal; the template→own-repo progression reads as what it is.
+
+Credentials are stripped before the remote is stored or sent. A repo cloned as
+`https://user:ghp_xxx@github.com/o/r.git` yields that string verbatim from git,
+and the server's comparison normalises credentials away anyway — so transmitting
+them stores a live token that is discarded unread at the only point it is used.
+Stripping applies to `http(s)` only: in `ssh://git@github.com/…` the userinfo is
+a login name, not a secret.
+
+**The record-time check that does work is `workspace_root`.** Unlike the remote it
+exists from the moment the candidate connects, and it does not move during normal
+work. Compare the **folder name**, not the full path — `C:\Dev\solution` and
+`/home/me/solution` are one project on two machines, and rejecting that buys
+nothing. A candidate who connects an unrelated side project has a different folder
+name, which is the accidental-capture and casual-misdirection case this is for.
+A changed full path with an unchanged folder name is recorded and reported, not
+rejected.
+
+The value the plugin sends is the directory that actually contains
+`.cadra/config.json`, resolved at submit time — not the string stored at connect.
+Copying `config.json` into another folder therefore produces a different
+`workspace_root`, which is exactly what the check catches.
+
 ### 5.2 `cadra-submit`
 
 Triggered by "submit my trace", "save my work", "send my session to Cadra".

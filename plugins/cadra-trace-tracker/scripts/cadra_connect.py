@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 import urllib.error
@@ -16,20 +15,9 @@ import urllib.request
 from pathlib import Path
 
 from cadra import client, config
+from cadra.repo import git_remote, strip_credentials  # noqa: F401
 
 TIMEOUT_S = 20
-
-
-def git_remote(workspace: Path) -> str | None:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(workspace), "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    remote = out.stdout.strip()
-    return remote or None
 
 
 def verify_token(*, proxy_base_url: str, token: str) -> tuple[bool, str]:

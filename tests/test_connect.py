@@ -120,3 +120,25 @@ def test_the_home_directory_is_refused_as_a_workspace(monkeypatch, tmp_path: Pat
     code = cadra_connect.main(["--workspace", str(home), "--init"])
     assert code == 1
     assert not (home / ".cadra").exists()
+
+
+def test_credentials_are_stripped_from_the_remote(workspace: Path, monkeypatch):
+    """A repo cloned with an embedded PAT yields it verbatim from git, and the
+    server's binding comparison discards credentials before comparing anyway."""
+    from cadra import repo
+    monkeypatch.setattr(cadra_connect, "verify_token", lambda **kw: (True, ""))
+    monkeypatch.setattr(repo.subprocess, "run", lambda *a, **kw: type(
+        "R", (), {"stdout": "https://u:ghp_liveTokenValue@github.com/o/r.git\n"})())
+    _connect(workspace, _token())
+    remote = config.load(workspace)["git_remote"]
+    assert remote == "https://github.com/o/r.git"
+    assert "ghp_" not in remote
+
+
+def test_remote_forms_without_credentials_are_left_alone():
+    for remote in ("https://github.com/o/r.git", "git@github.com:o/r.git",
+                   "ssh://git@github.com/o/r.git", "/local/path/repo.git"):
+        assert cadra_connect.strip_credentials(remote) == remote
+    # A bare token as the username is the other form GitHub accepts.
+    assert (cadra_connect.strip_credentials("https://ghp_tok@github.com/o/r.git")
+            == "https://github.com/o/r.git")
