@@ -14,24 +14,41 @@ deadline.
 
 ## Steps
 
-1. Ask the user for the **assessment token** from their Cadra Setup page, and for
-   the **proxy URL** shown alongside it (default `https://proxy.cadra.info`).
-2. Confirm the workspace: the current working directory should be the root of the
+1. Confirm the workspace: the current working directory should be the root of the
    solution repository. If the user is in a subdirectory, ask before proceeding.
-3. Run the connect script from the workspace root:
+2. Prepare the folder — this creates `.cadra/` and adds it to `.gitignore`:
 
    ```
-   python "$CLAUDE_PLUGIN_ROOT/scripts/cadra_connect.py" --token "<TOKEN>" --workspace "<WORKSPACE>" --proxy "<PROXY_URL>"
+   python "$CLAUDE_PLUGIN_ROOT/scripts/cadra_connect.py" --workspace "<WORKSPACE>" --init
    ```
 
-4. Report the result in plain language. On `CONNECTED`, tell the user trace
+3. **Ask the user to paste their token into the file themselves** — the path is in
+   the `READY` line. Do not offer to write it for them, do not ask them to paste it
+   into the chat, and do not read the file back. Then ask them to say "connect"
+   again when the file is saved.
+4. Complete the connection:
+
+   ```
+   python "$CLAUDE_PLUGIN_ROOT/scripts/cadra_connect.py" --workspace "<WORKSPACE>" --proxy "<PROXY_URL>"
+   ```
+
+   `<PROXY_URL>` is the address shown on the Setup page (default
+   `https://proxy.cadra.info`). It must be `https://`.
+5. Report the result in plain language. On `CONNECTED`, tell the user trace
    submission is ready and they can say "submit my trace" whenever they want to
    send their work. On `FAILED`, relay the reason and what to do about it.
 
 ## Rules
 
-- **Never print, echo, or repeat the token** in your replies.
-- Never write `.cadra/config.json` yourself — always run the script, which also
-  updates `.gitignore` in the correct order so the token cannot be committed.
+- **The token must never pass through you.** Not in a command you run, not in a
+  file you write, not repeated back in a reply. This is not only about your visible
+  output: every command you run is recorded in this session's transcript, and
+  cadra-submit uploads that transcript. A token on a command line becomes a token
+  in the upload. That is why step 3 is the user's job, not yours.
+- If the user pastes the token into the chat anyway, tell them it is now in the
+  transcript, ask them to get a fresh one from Setup, and continue with the new one
+  via the file.
+- Never write `.cadra/config.json` yourself — always run the script, which updates
+  `.gitignore` before anything sensitive is written.
 - If the script reports failure, nothing was saved; do not claim the workspace is
   connected.

@@ -5,6 +5,7 @@ All Claude Code format knowledge lives here so the server stays agent-agnostic.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -24,8 +25,11 @@ def rebase_path(value: str, workspace: Path) -> str:
         candidate = Path(value)
         if not candidate.is_absolute():
             return value.replace("\\", "/")
-        root = Path(str(workspace))
-        resolved = Path(str(candidate))
+        # Collapse `..` lexically — `src/../a.py` must arrive as `a.py` or the
+        # server cannot match it to a repo file. Lexical, not `resolve()`: this
+        # runs on paths from a transcript, which may no longer exist.
+        root = Path(os.path.normpath(str(workspace)))
+        resolved = Path(os.path.normpath(str(candidate)))
         if resolved == root or root in resolved.parents:
             return str(resolved.relative_to(root)).replace("\\", "/")
     except (OSError, ValueError):

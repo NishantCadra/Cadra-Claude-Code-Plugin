@@ -65,6 +65,29 @@ def _save_state(workspace: Path, state: dict) -> None:
         json.dump(state, handle, indent=2)
 
 
+def _previewed_cwds(start: Path) -> dict[str, list[str]]:
+    """The cwds each session showed in the last preview, by session id.
+
+    The dry run and the real send are separate invocations, and the transcript
+    grows between them — the consent conversation itself is appended to it. So
+    the send can legitimately carry directories the candidate never saw. Those
+    are the ones worth naming."""
+    workspace = config.find_workspace(start)
+    if workspace is None:
+        return {}
+    try:
+        with open(config.config_dir(workspace) / "last-preview.json",
+                  encoding="utf-8") as handle:
+            previous = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, list[str]] = {}
+    for entry in (previous or {}).get("sessions") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("session_id"), str):
+            out[entry["session_id"]] = list(entry.get("cwds") or [])
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", default=".")
@@ -73,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="build and preview the payload; send nothing")
     args = parser.parse_args(argv)
 
+    previewed_cwds = _previewed_cwds(Path(args.workspace))
     workspace = config.find_workspace(Path(args.workspace))
     if workspace is None:
         print("NOT CONNECTED: this workspace has no Cadra configuration. "
@@ -104,6 +128,15 @@ def main(argv: list[str] | None = None) -> int:
         fingerprint = envelope.chunk_hash(messages)
         if state.get(session.session_id) == fingerprint:
             print(f"SKIP {session.session_id[:8]} — already submitted, unchanged")
+            # Still recorded: the preview claims to be what was last sent, and a
+            # run where everything skips would otherwise blank the file that the
+            # candidate is told to inspect.
+            preview["sessions"].append({
+                "session_id": session.session_id, "message_count": len(messages),
+                "status": "unchanged since the last submission",
+                "cwds": meta["cwds"], "redacted": redacted_count,
+                "truncated_paths": truncated, "messages": messages,
+            })
             continue
 
         chunks = envelope.build_chunks(messages)
@@ -117,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
         })
         for cwd in meta["cwds"]:
             print(f"CWD {session.session_id[:8]} — {cwd}")
+        if not args.dry_run and session.session_id in previewed_cwds:
+            fresh = [c for c in meta["cwds"]
+                     if c not in previewed_cwds[session.session_id]]
+            for cwd in fresh:
+                print(f"NEW-CWD {session.session_id[:8]} — {cwd} "
+                      "(entered after the preview you approved)")
         if meta["unreadable_lines"]:
             # Never fatal, never silent (§10): a partially readable transcript
             # otherwise looks identical to a candidate who did less work.
@@ -130,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         receipt: dict = {}
+        confirmed = 0
         ok = True
         for chunk_meta, chunk_messages in chunks:
             body = {
@@ -153,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
             }
             status, payload = client.post_chunk(
                 base_url=cfg["proxy_base_url"], token=cfg["token"], body=body)
+            # A 2xx carrying `accepted: false` is a refusal wearing a success
+            # code. §10: never report success the server did not state.
+            if status in (200, 202) and payload.get("accepted") is False:
+                status = 0
+                payload = {"error": {"code": "not_accepted",
+                                     "message": "the server did not accept the chunk"}}
             if status not in (200, 202):
                 error = payload.get("error") or {}
                 print(f"FAILED {session.session_id[:8]} — "
@@ -169,12 +215,22 @@ def main(argv: list[str] | None = None) -> int:
                 # touched, so the next run resubmits it from chunk 0 (§10).
                 break
             receipt = payload
+            # Sum across chunks: `receipt` alone is the LAST chunk's, and the
+            # largest real sessions need two (§9.3), so quoting it would
+            # under-report exactly where a candidate is most likely to check.
+            count = payload.get("messages")
+            if isinstance(count, int):
+                confirmed += count
         if ok:
             state[session.session_id] = fingerprint
             submitted += 1
             print(f"SUBMITTED {session.session_id[:8]} — server confirmed "
-                  f"{receipt.get('messages', '?')} messages at "
+                  f"{confirmed} of {len(messages)} messages at "
                   f"{receipt.get('received_at', '?')}")
+            if confirmed != len(messages):
+                print(f"NOTE {session.session_id[:8]}: the server counted "
+                      f"{confirmed} messages, this machine sent {len(messages)}. "
+                      "Report this if it persists.")
 
     config.config_dir(workspace).mkdir(parents=True, exist_ok=True)
     with open(config.config_dir(workspace) / "last-preview.json", "w",

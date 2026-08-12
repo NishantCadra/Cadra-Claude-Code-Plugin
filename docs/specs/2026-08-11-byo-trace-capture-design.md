@@ -587,7 +587,8 @@ No test infrastructure exists in this repo today; it is added with the rewrite.
   name shares the prefix* (`C:/Dev/ws-other`) excluded; worktree cwd included;
   a session that starts in the workspace and later moves outside it is included
   whole, with every cwd listed in `session.cwds`; a session that starts outside
-  and later enters the workspace is excluded **and reported**.
+  and later enters the workspace is excluded, and its project folder is never
+  opened at all (§6.1 — the reporting promise was dropped deliberately).
 - **Enumeration (§6.1.1):** only prefix-matching directories are opened — assert
   by instrumenting file opens that an unrelated project directory is never
   touched; a subagent file is attributed to its parent session and never emitted

@@ -134,12 +134,16 @@ def test_connect_writes_only_cadra_and_appends_to_gitignore(populated: Path,
              f"{seg({'coding_assessment_id': 'a-1', 'exp': 99999999999})}.sig")
 
     before = _snapshot(populated)
-    code = cadra_connect.main(["--token", token, "--workspace", str(populated),
+    cadra_connect.main(["--workspace", str(populated), "--init"])
+    cadra_connect.token_path(populated).write_text(token, encoding="utf-8")
+    code = cadra_connect.main(["--workspace", str(populated),
                                "--proxy", "https://proxy.test"])
     assert code == 0
     after = _snapshot(populated)
     _assert_only_cadra_changed(before, after, gitignore_may_grow=True)
     assert ".cadra/" in after[".gitignore"].decode()
+    # The paste file is consumed, not left lying around as a second copy.
+    assert ".cadra/token.txt" not in after
 
 
 def test_transcripts_are_never_modified(connected: Path, transcripts: Path):

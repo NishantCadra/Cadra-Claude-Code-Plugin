@@ -72,3 +72,54 @@ def test_shared_region_sentinels_are_present_and_well_formed():
     shared = source[source.index(begin):source.index(end)]
     assert "def redact_text" in shared, "the rule engine must be inside the region"
     assert "def redact_messages" not in shared, "plugin-only code must be outside"
+
+
+def _jwt() -> str:
+    return ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiJhYmNkZWZnaGlqIiwidHlwZSI6ImYxLWNvZGluZyJ9."
+            "s3cr3tsignaturevalue12345")
+
+
+def _bash(command: str) -> list[dict]:
+    return [{"role": "assistant", "tool_calls": [
+        {"id": "t1", "type": "function",
+         "function": {"name": "Bash", "arguments": {"command": command}}}]}]
+
+
+def test_secrets_in_command_arguments_are_redacted():
+    """The leak this rule exists for: a token on a command line is recorded in
+    the transcript as a tool argument, and the transcript is what gets uploaded."""
+    messages, _paths, count = redact_messages(_bash(f'connect.py --token "{_jwt()}"'))
+    command = messages[0]["tool_calls"][0]["function"]["arguments"]["command"]
+    assert count == 1
+    assert _jwt() not in command
+    assert "[redacted:token]" in command
+
+
+def test_environment_secrets_in_commands_are_redacted():
+    messages, _paths, count = redact_messages(
+        _bash("export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"))
+    command = messages[0]["tool_calls"][0]["function"]["arguments"]["command"]
+    assert count >= 1
+    assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in command
+
+
+def test_redacting_a_command_does_not_truncate_the_file_it_names():
+    """Only write content is hashed for attestation. Rewriting a command changes
+    nothing that is hashed, so it must not cost the candidate a file's coverage."""
+    messages = _bash(f'cat src/app.py --token "{_jwt()}"')
+    messages[0]["tool_calls"][0]["function"]["arguments"]["file_path"] = "src/app.py"
+    _messages, paths, count = redact_messages(messages)
+    assert count == 1
+    assert paths == set()
+
+
+def test_path_arguments_are_left_alone():
+    """A path is not a secret, and rewriting one would break scoping downstream."""
+    messages = [{"role": "assistant", "tool_calls": [
+        {"id": "t1", "type": "function", "function": {"name": "Read", "arguments": {
+            "file_path": "src/aVeryLongGeneratedModuleNameThatLooksHighEntropy_x1.py"}}}]}]
+    out, paths, _count = redact_messages(messages)
+    args = out[0]["tool_calls"][0]["function"]["arguments"]
+    assert args["file_path"].endswith("_x1.py")
+    assert paths == set()

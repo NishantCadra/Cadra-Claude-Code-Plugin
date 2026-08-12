@@ -47,6 +47,11 @@ the cadra-connect skill instead.
    - `SUBMITTED` lines → how many sessions were sent, and the server's confirmed
      message count. This is the server's receipt, not a local claim.
    - `SKIP` lines → already submitted and unchanged.
+   - `NEW-CWD` lines → a directory the session entered *after* the preview the
+     user approved. Say so plainly and name the directory: the transcript keeps
+     growing while you talk, so the preview cannot be the last word on where a
+     session went. If it looks private, tell them it has already been sent and
+     that they should raise it with the program team.
    - `NOTE` lines → transcripts that were examined and left out, with the reason
      the script gave: started in a sibling directory, or carrying no recorded
      working directory. Report only those reasons. Mention that starting `claude`

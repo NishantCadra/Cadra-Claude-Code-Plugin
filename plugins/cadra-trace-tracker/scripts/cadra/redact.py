@@ -94,9 +94,16 @@ PATH_ARG_KEYS = ("file_path", "filePath", "path", "target_file", "notebook_path"
 def redact_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], set[str], int]:
     """Redact in place. Returns (messages, redacted_write_paths, count).
 
-    Write-argument redaction changes the very lines attestation matches against the
-    repo, so those paths are reported and later marked truncated — the file leaves
-    the coverage denominator instead of scoring as unattested (§8.1).
+    EVERY string argument is scanned, not only write content. `Bash.command` is
+    the one that matters most: a candidate who runs `export API_KEY=…`, curls with
+    a bearer header, or connects to a database with a password in the URL has that
+    secret recorded verbatim in the transcript as a tool argument.
+
+    Only a change to *write content* adds to `redacted_paths`. Those are the lines
+    attestation hashes against the repo, so a rewritten one must be reported and
+    marked truncated — the file leaves the coverage denominator instead of scoring
+    as unattested (§8.1). Rewriting a command string changes nothing that is
+    hashed, so it must not truncate the file it happens to name.
     """
     total = 0
     redacted_paths: set[str] = set()
@@ -116,17 +123,24 @@ def redact_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
             path = next((args[k] for k in PATH_ARG_KEYS
                          if isinstance(args.get(k), str)), None)
             touched = 0
-            for key in WRITE_CONTENT_KEYS:
-                if isinstance(args.get(key), str):
-                    args[key], n = redact_text(args[key])
+            for key, value in list(args.items()):
+                if not isinstance(value, str):
+                    continue
+                if key in PATH_ARG_KEYS:
+                    continue  # a path is not a secret, and rewriting it breaks scoping
+                args[key], n = redact_text(value)
+                if key in WRITE_CONTENT_KEYS:
                     touched += n
+                total += n
             for edit in args.get("edits") or []:
                 if isinstance(edit, dict):
-                    for key in WRITE_CONTENT_KEYS:
-                        if isinstance(edit.get(key), str):
-                            edit[key], n = redact_text(edit[key])
+                    for key, value in list(edit.items()):
+                        if not isinstance(value, str) or key in PATH_ARG_KEYS:
+                            continue
+                        edit[key], n = redact_text(value)
+                        if key in WRITE_CONTENT_KEYS:
                             touched += n
+                        total += n
             if touched and isinstance(path, str):
                 redacted_paths.add(path)
-            total += touched
     return messages, redacted_paths, total

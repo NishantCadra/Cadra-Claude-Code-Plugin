@@ -176,3 +176,78 @@ def test_malformed_lines_are_counted_and_reported_not_fatal(
     assert code == 0
     assert "2 unreadable line(s) skipped" in out
     assert "SUBMITTED" in out
+
+
+def test_a_2xx_that_refuses_the_chunk_is_not_treated_as_success(
+    connected: Path, transcripts: Path, monkeypatch, capsys
+):
+    """§10: never report success the server did not state. `accepted: false`
+    behind a 200 is a refusal, and the cursor must not move."""
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda **kw: (200, {"accepted": False}))
+    code = cadra_submit.main(["--workspace", str(connected),
+                              "--projects-root", str(transcripts)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "SUBMITTED" not in out
+    assert "not_accepted" in out
+    state = json.loads(
+        (config.config_dir(connected) / "state.json").read_text(encoding="utf-8"))
+    assert state == {}
+
+
+def test_the_confirmed_count_sums_every_chunk(connected: Path, transcripts: Path,
+                                              monkeypatch, capsys):
+    """`receipt` is overwritten per chunk, so quoting it reports only the last."""
+    monkeypatch.setattr(cadra_submit.envelope, "CHUNK_BYTES", 1)  # one msg per chunk
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda *, base_url, token, body: (
+                            202, {"messages": len(body["messages"]),
+                                  "received_at": "now"}))
+    cadra_submit.main(["--workspace", str(connected),
+                       "--projects-root", str(transcripts)])
+    out = capsys.readouterr().out
+    assert "server confirmed 2 of 2 messages" in out
+
+
+def test_a_run_where_everything_skips_keeps_the_preview(
+    connected: Path, transcripts: Path, monkeypatch
+):
+    """§4 calls this file what was last sent; blanking it on a no-op run makes
+    the skill point the candidate at an empty file."""
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda **kw: (202, {"messages": 2, "received_at": "now"}))
+    args = ["--workspace", str(connected), "--projects-root", str(transcripts)]
+    cadra_submit.main(args)
+    cadra_submit.main(args)
+    preview = json.loads(
+        (config.config_dir(connected) / "last-preview.json").read_text(encoding="utf-8"))
+    assert len(preview["sessions"]) == 1
+    assert preview["sessions"][0]["messages"]
+
+
+def test_a_directory_entered_after_the_preview_is_called_out(
+    connected: Path, transcripts: Path, monkeypatch, capsys
+):
+    """The dry run and the send are separate runs and the transcript grows
+    between them, so the preview cannot be the last word on where a session went."""
+    from cadra import collect
+    cadra_submit.main(["--workspace", str(connected),
+                       "--projects-root", str(transcripts), "--dry-run"])
+    capsys.readouterr()
+
+    enc = collect.encode_dir_name(Path(str(connected)).resolve())
+    with open(transcripts / enc / "sess1.jsonl", "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(
+            {"type": "user", "cwd": str(connected / "private-notes"),
+             "sessionId": "sess1", "timestamp": "2026-08-11T09:01:00Z",
+             "message": {"role": "user", "content": "later"}}) + "\n")
+
+    monkeypatch.setattr(cadra_submit.client, "post_chunk",
+                        lambda **kw: (202, {"messages": 3, "received_at": "now"}))
+    cadra_submit.main(["--workspace", str(connected),
+                       "--projects-root", str(transcripts)])
+    out = capsys.readouterr().out
+    assert "NEW-CWD" in out
+    assert "private-notes" in out
+    assert "entered after the preview you approved" in out

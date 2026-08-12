@@ -12,9 +12,25 @@ import urllib.error
 import urllib.request
 
 TIMEOUT_S = 120
+MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib copies every header, Authorization included, into a redirect —
+    cross-host. One 302 from a mistyped or hostile proxy would hand over the
+    assessment token, so redirects are refused outright."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirects)
 
 
 def _call(method: str, url: str, token: str, body: dict | None) -> tuple[int, dict]:
+    if not url.startswith("https://"):
+        return 0, {"error": {"code": "insecure_url",
+                             "message": "the proxy address must be https://"}}
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
         url, data=data, method=method,
@@ -22,8 +38,8 @@ def _call(method: str, url: str, token: str, body: dict | None) -> tuple[int, di
                  "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as resp:
-            raw = resp.read().decode("utf-8") or "{}"
+        with _OPENER.open(request, timeout=TIMEOUT_S) as resp:
+            raw = resp.read(MAX_RESPONSE_BYTES).decode("utf-8", "replace") or "{}"
             return resp.status, json.loads(raw)
     except urllib.error.HTTPError as err:
         try:

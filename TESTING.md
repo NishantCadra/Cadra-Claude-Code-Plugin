@@ -66,12 +66,20 @@ claude plugin install cadra-trace-tracker@cadra
 
 Run `claude` **from the root of that repository** and say "connect to Cadra".
 
-- [ ] Claude asks for the assessment token and the proxy URL. It does not ask
-      for a user ID, roll number, or project name — those are v2 concepts and
-      are gone.
+- [ ] Claude runs `--init` first, which creates `.cadra/` and adds it to
+      `.gitignore`, then prints a `READY` line naming `.cadra/token.txt`.
+      It does not ask for a user ID, roll number, or project name — those are v2
+      concepts and are gone.
+- [ ] **Claude asks _you_ to paste the token into that file yourself.** It must
+      not offer to write it for you, ask you to paste it into the chat, or read
+      the file back. This is the point of the design: anything Claude types
+      appears in the transcript, and the transcript is what gets uploaded.
+      Check afterwards that no `--token` argument appears anywhere in the
+      session — the script has no such option.
 - [ ] Claude never echoes the token back to you, in this step or any later one.
-- [ ] On success the script prints `CONNECTED workspace=<path>` and Claude tells
-      you submission is ready.
+- [ ] On success the script prints `CONNECTED workspace=<path>`, `.cadra/token.txt`
+      is **gone** (consumed, so there is only one copy), and Claude tells you
+      submission is ready.
 - [ ] `.cadra/config.json` exists and contains the token, `proxy_base_url`,
       `workspace_root`, `git_remote` and `connected_at`. On macOS/Linux its mode
       is `600`.
@@ -84,6 +92,10 @@ Failure paths, each of which must leave **no** `.cadra/` behind:
 - [ ] A token whose `exp` is in the past → `FAILED: this token has expired.`
 - [ ] An unreachable proxy URL → `FAILED: could not reach Cadra (...). Nothing
       was saved.` and Claude does not claim the workspace is connected.
+- [ ] An `http://` proxy URL → `FAILED: the proxy address must be an https:// URL.`
+      Redirects carry the Authorization header, so plain http is refused outright.
+- [ ] Connecting with your home directory as the workspace → `FAILED: ... too
+      broad to be a project.` It would otherwise pull in every project you have.
 
 Until the proxy exists, the only way past this step is a local stub — see the
 appendix. That is a testing instrument, not a supported flow.
@@ -193,7 +205,13 @@ rehearsed against the stub below.
 Standard library only; accepts any token, accepts every chunk, and stores
 nothing. It exists so Parts 2–4 can be walked through end to end before the real
 proxy is built. Save as `stub_proxy.py` **outside** the test repository and run
-`python stub_proxy.py`, then connect with `--proxy http://127.0.0.1:8787`.
+`python stub_proxy.py`, then connect with `--proxy https://127.0.0.1:8787`.
+
+Plain `http://` is refused by design, so the stub needs a TLS certificate —
+generate a self-signed one and wrap the socket with `ssl.SSLContext`. That
+friction is deliberate: the check it exercises is what stops a redirect from
+walking off with the assessment token. Do not add an "allow http for testing"
+flag to the shipped code to avoid it.
 
 ```python
 import json

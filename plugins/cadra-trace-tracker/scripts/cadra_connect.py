@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from cadra import config
+from cadra import client, config
 
 TIMEOUT_S = 20
 
@@ -39,7 +39,8 @@ def verify_token(*, proxy_base_url: str, token: str) -> tuple[bool, str]:
         headers={"Authorization": f"Bearer {token}"}, method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as resp:
+        # Same opener as client.py: no redirect may carry the bearer elsewhere.
+        with client._OPENER.open(request, timeout=TIMEOUT_S) as resp:
             return (200 <= resp.status < 300), ""
     except urllib.error.HTTPError as err:
         if err.code == 401:
@@ -49,21 +50,56 @@ def verify_token(*, proxy_base_url: str, token: str) -> tuple[bool, str]:
         return False, f"could not reach Cadra ({type(exc).__name__})"
 
 
+TOKEN_FILENAME = "token.txt"
+
+
+def token_path(workspace: Path) -> Path:
+    return config.config_dir(workspace) / TOKEN_FILENAME
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--token", required=True)
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--proxy", required=True)
+    parser.add_argument("--proxy", default="")
     parser.add_argument("--label", default="")
+    parser.add_argument("--init", action="store_true",
+                        help="prepare .cadra/ and print where to paste the token")
     args = parser.parse_args(argv)
 
     workspace = Path(args.workspace).resolve()
     if not workspace.is_dir():
         print(f"FAILED: {workspace} is not a directory")
         return 1
+    # A workspace that is the home directory or a drive root would make every
+    # project folder beneath it "in scope" — the candidate's whole transcript
+    # store, which §6.1.1 exists to keep out.
+    if workspace == Path.home().resolve() or workspace == workspace.parent:
+        print(f"FAILED: {workspace} is too broad to be a project. Connect from "
+              "the folder holding your solution.")
+        return 1
+
+    if args.init:
+        # Create the folder and its ignore entry BEFORE the candidate pastes
+        # anything, so the token file cannot exist un-ignored even briefly.
+        config.ensure_gitignored(workspace)
+        config.config_dir(workspace).mkdir(parents=True, exist_ok=True)
+        print(f"READY paste your assessment token into {token_path(workspace)} "
+              "and save the file, then say 'connect' again.")
+        return 0
+
+    source = token_path(workspace)
+    try:
+        token = source.read_text(encoding="utf-8").strip()
+    except OSError:
+        print(f"FAILED: no token file at {source}. Run with --init first, then "
+              "paste your token into that file yourself.")
+        return 1
+    if not token:
+        print(f"FAILED: {source} is empty. Paste your assessment token into it.")
+        return 1
 
     try:
-        claims = config.decode_claims(args.token)
+        claims = config.decode_claims(token)
     except ValueError as exc:
         print(f"FAILED: {exc}. Re-copy the token from your Setup page.")
         return 1
@@ -75,19 +111,30 @@ def main(argv: list[str] | None = None) -> int:
         print("FAILED: this token has expired. Request a fresh one.")
         return 1
 
-    ok, detail = verify_token(proxy_base_url=args.proxy, token=args.token)
+    proxy = args.proxy or claims.get("proxy_base_url") or ""
+    if not proxy.startswith("https://"):
+        print("FAILED: the proxy address must be an https:// URL. Nothing was saved.")
+        return 1
+
+    ok, detail = verify_token(proxy_base_url=proxy, token=token)
     if not ok:
         print(f"FAILED: {detail}. Nothing was saved.")
         return 1
 
     config.save(workspace, {
-        "token": args.token,
+        "token": token,
         "assessment_label": args.label,
         "workspace_root": str(workspace).replace("\\", "/"),
         "git_remote": git_remote(workspace),
-        "proxy_base_url": args.proxy.rstrip("/"),
+        "proxy_base_url": proxy.rstrip("/"),
         "connected_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
+    # The paste file has done its job. Two plaintext copies of the token is one
+    # more than necessary, and this one has no 0600 mode.
+    try:
+        source.unlink()
+    except OSError:
+        print(f"NOTE could not remove {source}; delete it yourself.")
     print(f"CONNECTED workspace={workspace}")
     print("Trace submission is ready. Say 'submit my trace' when you want to send "
           "your work.")

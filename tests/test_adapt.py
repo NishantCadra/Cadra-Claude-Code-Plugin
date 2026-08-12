@@ -139,3 +139,10 @@ def test_main_transcript_messages_are_never_tagged(
     session = _sub_session(transcripts, workspace, {"agentType": "general-purpose"})
     messages, _meta = adapt.load_session(session, workspace)
     assert "cadra_agent" not in messages[0]
+
+
+def test_dot_segments_are_collapsed_before_rebasing():
+    """`src/../a.py` reaching the server unresolved matches no repo file, so the
+    write silently scores as unattested."""
+    assert adapt.rebase_path("C:/Dev/ws/src/../a.py", WS) == "a.py"
+    assert adapt.rebase_path("C:/Dev/ws/./src/a.py", WS) == "src/a.py"
