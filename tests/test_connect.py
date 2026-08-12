@@ -142,3 +142,65 @@ def test_remote_forms_without_credentials_are_left_alone():
     # A bare token as the username is the other form GitHub accepts.
     assert (cadra_connect.strip_credentials("https://ghp_tok@github.com/o/r.git")
             == "https://github.com/o/r.git")
+
+
+def test_connect_claims_the_folder_rather_than_only_proving_the_token(
+    workspace: Path, monkeypatch
+):
+    """Binding at connect closes the trust-on-first-use window: the first
+    SUBMISSION could be days later from anywhere, connect is day zero."""
+    calls: list[dict] = []
+    monkeypatch.setattr(cadra_connect.client, "bind_workspace",
+                        lambda **kw: (calls.append(kw), (200, {}))[1])
+    assert _connect(workspace, _token()) == 0
+    assert calls[0]["workspace_root"] == str(workspace).replace("\\", "/")
+    assert calls[0]["token"] == _token()
+
+
+def test_a_folder_already_bound_elsewhere_is_refused_at_connect(
+    workspace: Path, monkeypatch
+):
+    """The whole point: the candidate finds out now, not after days of work."""
+    monkeypatch.setattr(cadra_connect.client, "bind_workspace",
+                        lambda **kw: (409, {"error": {
+                            "code": "binding_mismatch",
+                            "expected_workspace": "solution"}}))
+    _paste(workspace, _token())
+    code = cadra_connect.main(["--workspace", str(workspace),
+                               "--proxy", "https://proxy.test"])
+    assert code == 1
+    assert not config.config_path(workspace).exists()
+
+
+def test_the_expected_folder_is_named_so_the_candidate_can_self_diagnose(
+    workspace: Path, monkeypatch, capsys
+):
+    monkeypatch.setattr(cadra_connect.client, "bind_workspace",
+                        lambda **kw: (409, {"error": {
+                            "expected_workspace": "my-solution"}}))
+    _paste(workspace, _token())
+    cadra_connect.main(["--workspace", str(workspace), "--proxy", "https://proxy.test"])
+    out = capsys.readouterr().out
+    assert "my-solution" in out
+    assert _token() not in out
+
+
+def test_a_bad_token_still_reads_as_a_token_problem_not_a_folder_one(
+    workspace: Path, monkeypatch, capsys
+):
+    monkeypatch.setattr(cadra_connect.client, "bind_workspace",
+                        lambda **kw: (401, {"error": {"code": "invalid_token"}}))
+    _paste(workspace, _token())
+    assert cadra_connect.main(["--workspace", str(workspace),
+                               "--proxy", "https://proxy.test"]) == 1
+    assert "did not accept this token" in capsys.readouterr().out
+
+
+def test_an_unreachable_server_never_leaves_a_config(workspace: Path, monkeypatch):
+    monkeypatch.setattr(cadra_connect.client, "bind_workspace",
+                        lambda **kw: (0, {"error": {"code": "network_error",
+                                                    "message": "URLError"}}))
+    _paste(workspace, _token())
+    assert cadra_connect.main(["--workspace", str(workspace),
+                               "--proxy", "https://proxy.test"]) == 1
+    assert not config.config_path(workspace).exists()

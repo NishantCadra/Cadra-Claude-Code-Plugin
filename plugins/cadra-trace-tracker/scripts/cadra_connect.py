@@ -10,8 +10,6 @@ import argparse
 import json
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from cadra import client, config
@@ -20,22 +18,32 @@ from cadra.repo import git_remote, strip_credentials  # noqa: F401
 TIMEOUT_S = 20
 
 
-def verify_token(*, proxy_base_url: str, token: str) -> tuple[bool, str]:
-    """Call GET /v1/traces. The signal is 200 vs 401; contents are irrelevant."""
-    request = urllib.request.Request(
-        f"{proxy_base_url.rstrip('/')}/v1/traces",
-        headers={"Authorization": f"Bearer {token}"}, method="GET",
-    )
-    try:
-        # Same opener as client.py: no redirect may carry the bearer elsewhere.
-        with client._OPENER.open(request, timeout=TIMEOUT_S) as resp:
-            return (200 <= resp.status < 300), ""
-    except urllib.error.HTTPError as err:
-        if err.code == 401:
-            return False, "the server did not accept this token (401)"
-        return False, f"the server returned HTTP {err.code}"
-    except Exception as exc:
-        return False, f"could not reach Cadra ({type(exc).__name__})"
+def verify_token(*, proxy_base_url: str, token: str,
+                 workspace_root: str = "") -> tuple[bool, str]:
+    """Prove the token and claim this folder in one call (§5.1).
+
+    Binding here rather than at the first submission is deliberate. Under
+    trust-on-first-use the first submission is accepted whatever folder it comes
+    from, so a candidate whose first submission is from the wrong project binds
+    to it and has their real work rejected afterwards — the failure lands late
+    and backwards. Connect happens on day zero, while they are following the
+    Setup instructions in the folder they just prepared.
+    """
+    status, payload = client.bind_workspace(
+        base_url=proxy_base_url, token=token, workspace_root=workspace_root)
+    if 200 <= status < 300:
+        return True, ""
+    error = payload.get("error") or {}
+    if status == 401:
+        return False, "the server did not accept this token (401)"
+    if status == 409:
+        expected = error.get("expected_workspace") or "another folder"
+        return False, (f"this assessment is already registered to '{expected}'. "
+                       "Connect from that folder, or ask the program team to "
+                       "reset it if you have moved your work")
+    if status == 0:
+        return False, f"could not reach Cadra ({error.get('message', 'no reply')})"
+    return False, f"the server returned HTTP {status}"
 
 
 TOKEN_FILENAME = "token.txt"
@@ -104,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         print("FAILED: the proxy address must be an https:// URL. Nothing was saved.")
         return 1
 
-    ok, detail = verify_token(proxy_base_url=proxy, token=token)
+    ok, detail = verify_token(proxy_base_url=proxy, token=token,
+                              workspace_root=str(workspace).replace("\\", "/"))
     if not ok:
         print(f"FAILED: {detail}. Nothing was saved.")
         return 1

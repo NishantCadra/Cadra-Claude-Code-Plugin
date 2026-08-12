@@ -122,17 +122,23 @@ on model fidelity for correctness.
 
 Triggered by "connect to Cadra", "set up my assessment", "my token is wrong".
 
-1. Ask for the token from the Setup page — the same token a managed candidate
-   pastes into `opencode.json`. Validate shape locally (three dot-separated
-   segments, decodes as JWT, carries `coding_assessment_id`, unexpired). Do not
-   assert on `type`: the server decides what a token may do, and hard-coding the
-   check client-side would break on any future type.
-2. Determine `workspace_root` — the current working directory, confirmed with the
-   candidate. Read `git remote get-url origin` if the workspace is a git repo.
-3. Run `cadra_connect.py`, which appends `.cadra/` to `.gitignore`, writes
-   `config.json`, then calls `GET /v1/traces` to prove the token works.
-4. Report: connected, or the specific failure (expired token, wrong assessment,
-   no network).
+1. `cadra_connect.py --init` appends `.cadra/` to `.gitignore` and creates the
+   folder, then names the file the candidate must paste their token into.
+   **The token is never handled by the model** — not as a command-line argument,
+   not written on the candidate's behalf, not read back. Every command the model
+   runs is recorded in the session transcript, and `cadra-submit` uploads that
+   transcript, so a token on a command line becomes a token in the upload.
+2. The candidate pastes it into `.cadra/token.txt` themselves.
+3. `cadra_connect.py` reads that file, validates the token's shape locally (three
+   dot-separated segments, decodes as JWT, carries `coding_assessment_id`,
+   unexpired) and refuses a non-`https` proxy. It does **not** assert on `type`:
+   the server decides what a token may do, and hard-coding the check client-side
+   would break on any future type.
+4. It then calls `POST /v1/traces/bind` with the resolved `workspace_root`, which
+   proves the token and claims the folder in one call. Only on success does it
+   write `config.json` and delete the paste file, leaving one copy of the token.
+5. Report: connected, or the specific failure (expired token, unaccepted token,
+   folder already bound elsewhere — with the expected folder named — no network).
 
 **Why this exists.** A managed OpenCode candidate discovers a bad token on their
 first prompt, within seconds. A BYO candidate would otherwise discover it at
@@ -171,6 +177,20 @@ and the server's comparison normalises credentials away anyway — so transmitti
 them stores a live token that is discarded unread at the only point it is used.
 Stripping applies to `http(s)` only: in `ssh://git@github.com/…` the userinfo is
 a login name, not a secret.
+
+**The record-time check that does work is `workspace_root`, and it binds at
+connect.** `cadra-connect` calls `POST /v1/traces/bind` with the resolved
+workspace, which proves the token and claims the folder in one call. Binding at
+the first *submission* instead would leave a trust-on-first-use window with the
+failure pointing the wrong way: the first submission is accepted whatever folder
+it comes from, so a candidate whose first submission is from the wrong project
+binds to it and has their real work rejected for days afterwards. Connect happens
+on day zero, while they are following the Setup instructions in the folder they
+just prepared, and a mismatch is reported there — naming the expected folder — with
+nothing saved.
+
+The submit-time check stays as well. Connect is a client-side call and a crafted
+request can skip it, so `POST /v1/traces` re-checks against the same binding.
 
 **The record-time check that does work is `workspace_root`.** Unlike the remote it
 exists from the moment the candidate connects, and it does not move during normal

@@ -59,3 +59,16 @@ def post_chunk(*, base_url: str, token: str, body: dict) -> tuple[int, dict]:
 
 def get_traces(*, base_url: str, token: str) -> tuple[int, dict]:
     return _call("GET", f"{base_url.rstrip('/')}/v1/traces", token, None)
+
+
+def bind_workspace(*, base_url: str, token: str, workspace_root: str) -> tuple[int, dict]:
+    """Claim this folder for the assessment, and prove the token in one call.
+
+    A write, so a POST on its own route rather than the read endpoint. Binding
+    here rather than at first submission closes the trust-on-first-use window:
+    connect happens on day zero, while the candidate is following the Setup
+    instructions and demonstrably in the folder they just prepared. A first
+    submission could be days later from anywhere.
+    """
+    return _call("POST", f"{base_url.rstrip('/')}/v1/traces/bind", token,
+                 {"workspace_root": workspace_root})
