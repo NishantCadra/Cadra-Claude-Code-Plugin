@@ -42,11 +42,11 @@ def in_scope(cwd: str, workspace: Path) -> bool:
 def candidate_dirs(projects_root: Path, workspace: Path) -> list[Path]:
     """Sound superset: an in-scope origin cwd always encodes to this prefix.
 
-    Matches in both directions: the workspace itself or a descendant (the
-    directory name extends the workspace encoding), and an ancestor of the
-    workspace (the workspace encoding extends the directory name) — a session
-    started one level up and later `cd`-ed into the workspace lands there.
-    Either way `origin_cwd` + `in_scope` filter the result exactly."""
+    Forward match only — the directory name is the workspace encoding or
+    extends it. Ancestor directories are deliberately NOT matched: a session
+    started above the workspace is out of scope by §6.1, and reaching up to
+    find one would open the candidate's home directory. `origin_cwd` +
+    `in_scope` then filter this superset exactly."""
     prefix = encode_dir_name(_norm(workspace))
     lowered = prefix.lower()
     out: list[Path] = []
@@ -56,11 +56,7 @@ def candidate_dirs(projects_root: Path, workspace: Path) -> list[Path]:
         if not entry.is_dir():
             continue
         name = entry.name.lower()
-        if (
-            name == lowered
-            or name.startswith(lowered + "-")
-            or lowered.startswith(name + "-")
-        ):
+        if name == lowered or name.startswith(lowered + "-"):
             out.append(entry)
     return out
 

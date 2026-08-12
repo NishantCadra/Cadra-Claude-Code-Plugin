@@ -573,13 +573,34 @@ def test_sibling_directory_sharing_the_encoded_prefix_is_excluded(
     assert sessions == []
 
 
-def test_session_started_outside_but_touching_the_workspace_is_excluded_and_reported(
-    transcripts: Path, workspace: Path
+def test_session_started_above_the_workspace_is_excluded_without_opening_its_folder(
+    transcripts: Path, workspace: Path, monkeypatch
 ):
+    """A session started one level up is out of scope (§6.1) and we do NOT reach
+    up to find it: ancestor folders climb to the candidate's home directory."""
     parent = workspace.parent
     enc = collect.encode_dir_name(parent)
     write_jsonl(transcripts / enc / "s4.jsonl",
                 [_entry(str(parent), "s4"), _entry(str(workspace), "s4")])
+
+    opened: list[str] = []
+    real_open = collect.open_text
+    monkeypatch.setattr(
+        collect, "open_text",
+        lambda path, *a, **kw: (opened.append(str(path)), real_open(path, *a, **kw))[1],
+    )
+    sessions, _notes = collect.discover(transcripts, workspace)
+    assert sessions == []
+    assert not any("s4.jsonl" in path for path in opened)
+
+
+def test_sibling_in_a_candidate_folder_is_excluded_and_reported(
+    transcripts: Path, workspace: Path
+):
+    """Folders we do open but reject are reported, never silently dropped."""
+    sibling = workspace.parent / (workspace.name + "-other")
+    enc = collect.encode_dir_name(sibling)
+    write_jsonl(transcripts / enc / "s4b.jsonl", [_entry(str(sibling), "s4b")])
     sessions, notes = collect.discover(transcripts, workspace)
     assert sessions == []
     assert any("started elsewhere" in note for note in notes)
@@ -700,7 +721,10 @@ def in_scope(cwd: str, workspace: Path) -> bool:
 
 
 def candidate_dirs(projects_root: Path, workspace: Path) -> list[Path]:
-    """Sound superset: an in-scope origin cwd always encodes to this prefix."""
+    """Sound superset: an in-scope origin cwd always encodes to this prefix.
+
+    Forward match only — ancestor directories are deliberately NOT matched;
+    reaching up would open the candidate's home directory (design §6.1)."""
     prefix = encode_dir_name(_norm(workspace))
     lowered = prefix.lower()
     out: list[Path] = []
@@ -1834,9 +1858,11 @@ the cadra-connect skill instead.
    - `SUBMITTED` lines → how many sessions were sent, and the server's confirmed
      message count. This is the server's receipt, not a local claim.
    - `SKIP` lines → already submitted and unchanged.
-   - `NOTE` lines → sessions that touched this workspace but were started
-     elsewhere and were **not** included. Tell the user, and mention that starting
-     `claude` from the workspace root keeps future sessions in scope.
+   - `NOTE` lines → transcripts that were examined and left out (started in a
+     sibling directory, or carrying no recorded working directory). Tell the
+     user, and mention that starting `claude` from the workspace root keeps
+     future sessions in scope. Sessions started *above* the workspace are out of
+     scope and are not detected at all — see design §6.1.
    - `FAILED` lines → say which session failed and why in one sentence. Common
      cases: no internet (retry later, nothing is lost); `rejected_revoked` or
      `rejected_expired` (contact the program team); `binding_mismatch` (this

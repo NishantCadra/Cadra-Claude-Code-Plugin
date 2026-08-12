@@ -222,10 +222,24 @@ session wandered somewhere private can decline before anything is sent.
 
 **A session started outside the workspace is excluded, even if most of its work
 was inside.** This is the deliberate inverse of the old hook's
-walk-six-ancestors bug. To stop it being a silent loss, `cadra-submit` **reports**
-such sessions: *"3 sessions touched this workspace but were started elsewhere and
-were not included."* `cadra-connect` tells the candidate to launch `claude` from
-the workspace root.
+walk-six-ancestors bug.
+
+Such sessions are **not** reported, and that is a decision rather than an
+oversight. Reporting them would require looking in directories outside the
+workspace — and because a parent's encoded name is a prefix of the workspace's,
+"outside" climbs all the way to `C--Users-<name>`, the candidate's home
+directory. Probing personal transcripts and printing their paths into the
+pre-send preview is a worse outcome than a missing warning. It would also not
+work: whether an outside session ever *touched* the workspace cannot be decided
+without reading it whole, which §6.1.1 forbids, and a session started in an
+unrelated directory would be missed regardless.
+
+Prevention replaces the warning. `cadra-connect` tells the candidate to launch
+`claude` from the workspace root, and `cadra-submit` states the number of
+sessions found — including zero — before sending anything, so a candidate who
+launched from the wrong directory sees it immediately. Sessions in directories
+we *do* open and then reject (a sibling such as `C:\Dev\ws-other`) are still
+reported individually.
 
 Git worktrees fall out correctly: a cwd under `<workspace>/.claude/worktrees/…`
 is a descendant, so it is included.
