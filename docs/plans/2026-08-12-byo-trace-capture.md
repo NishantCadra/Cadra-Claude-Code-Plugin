@@ -2137,3 +2137,96 @@ Do not merge into `main` and do not push. Both are Varun's calls.
 **Deliberately deferred:** §13.1's onboarding checklist line lives in `cadra-prototype/docs/candidate-onboarding.md`, which this plan does not touch, per the instruction to leave that repo alone.
 
 **Type consistency:** `Session(session_id, main_file, origin_cwd, subagent_files)` — defined Task 2, consumed Tasks 3 and 6. `to_messages(entries, workspace, subagent=False)` — Task 3, consumed by `load_session`. `redact_messages -> (messages, paths, count)` — Task 4, consumed Task 6. `apply_size_controls -> (messages, paths)` and `build_chunks -> [(meta, messages)]` — Task 5, consumed Task 6. `post_chunk(base_url, token, body)` — Task 6, stubbed identically in every test.
+
+---
+
+## Status — 2026-08-12
+
+All eight tasks implemented on `byo-capture-rebuild`. Full suite: 75 passing, no
+test makes a network call. Not merged and not pushed — both are Varun's calls.
+
+Amendments made during task reviews, which override the plan text where they
+differ:
+
+- `cadra_submit.py` takes `--dry-run`. The skill runs it first and requires the
+  user's agreement before the real send, because the preview is worthless after
+  the fact (Task 6 review).
+- The envelope is nested exactly as spec §7.4 — `session` object, and `binding`
+  carrying `workspace_root` / `git_remote` / `git_branch`. Task 6's plan text
+  and test both said flat; §7.4 wins, since the companion ingest spec defers to
+  it as canonical.
+- Discovery never looks above the workspace, and the "sessions started
+  elsewhere" report was dropped as undeliverable without a content read that
+  §6.1.1 forbids (Task 2 review). Prevention replaced it: `cadra-connect` tells
+  the candidate to launch `claude` from the workspace root.
+- `redact.py` carries `# --- BEGIN/END SHARED REDACTION RULES ---` sentinels; the
+  cross-repo drift check hashes only the bytes between them, because the plugin
+  copy is deliberately not a byte twin of the proxy's (Task 4 review).
+- `adapt.load_session` meta carries `unreadable_lines`, printed as a NOTE, per
+  §10's "skip it, count it, report it".
+
+## Handoff — what needs the proxy
+
+`POST /v1/traces` and `GET /v1/traces` do not exist. Every network path in this
+plugin was developed against stubs. Consolidated from the review notes on this
+branch's commits; nothing below has been observed against a real server.
+
+**Connect (`GET /v1/traces`)**
+
+1. A live 200 for a valid token and 401 for a revoked/unknown one — `verify_token`
+   treats any other status as a hard failure and saves nothing.
+2. The list shape `cadra-traces` renders: `sessions[]` with `submitted_at`,
+   `message_count`, `bytes`, `session_id`, `binding_status`.
+
+**Submission (`POST /v1/traces`)**
+
+3. The 202 accept shape: `session_id` echoed, plus `messages` and `received_at`,
+   since the `SUBMITTED` line quotes both as the receipt.
+4. Which status a **duplicate** chunk returns. The client accepts 200 and 202;
+   anything else fails the session and blocks it.
+5. That `chunk.prefix_hash` / `chunk_hash` chaining is what the server actually
+   validates, and that a 4 MB body survives the proxy and its ingress.
+6. Bearer header name, and that the server — not the client — derives the
+   assessment id from the token. No `assessment_id` is sent.
+7. That the nested §7.4 envelope is the shape the server parses. This is the one
+   place where the plan and the spec disagreed; the spec was followed, so it is
+   also the most likely integration surprise.
+
+**Error contract**
+
+8. Body shape `{"error": {"code", "message"}}` behind 401, 403 and 409, and the
+   codes `rejected_revoked`, `rejected_expired`, `binding_mismatch`. Each maps to
+   a specific sentence in the `cadra-submit` skill; a different shape degrades to
+   `unknown:` with an empty message.
+9. `binding_mismatch` end to end: connect, change the workspace's git remote,
+   submit, and confirm the candidate gets a comprehensible message rather than a
+   silent rejection.
+
+**Scoring, end to end**
+
+10. That a submitted trace produces **non-zero attestations server-side**.
+    `tests/test_extraction_parity.py` proves the envelope yields attestation
+    items in `attestation_items_from_payload`, which is the check that would have
+    caught the absolute-path defect — but it calls the extractor directly and
+    proves nothing about the ingest path in between.
+11. That the velocity guard honours `client_ts` (companion spec §14). Without it
+    every BYO submission inserts in one burst and every candidate trips
+    `prompt_paste_velocity`. The plugin's half is done and tested; the server's
+    is not.
+
+**Cross-repo**
+
+12. `proxy/redact.py` and the backend copy do not exist yet (ingest plan Task 8
+    unexecuted). They must land carrying the same `BEGIN/END SHARED REDACTION
+    RULES` sentinels, or the release drift check has nothing to hash and fails
+    loudly by design.
+13. §13.1's onboarding checklist line still needs adding to
+    `cadra-prototype/docs/candidate-onboarding.md`; this repo deliberately does
+    not touch that repo.
+
+**Open, not proxy-dependent**
+
+14. There is no local history of what was submitted when:
+    `.cadra/last-preview.json` is overwritten every run. The legacy plugin's
+    `tracker.log` was the only deleted behaviour judged worth revisiting
+    (Task 7 review).
