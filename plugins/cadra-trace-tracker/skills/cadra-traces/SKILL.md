@@ -20,6 +20,12 @@ Read-only view of what the server actually holds. Never uploads anything.
 
 2. Render one compact line per stored session — date, message count, size. Keep it
    a status glance, not a report. Never show transcript content.
+
+   Describe each session by its **span and size** — when it began, when it ended,
+   how many messages — never by its opening message. A long session that starts
+   with "hi" is not a session about "hi", and a candidate shown only that will
+   reasonably conclude their work was lost. This wording is carried over from the
+   plugin it replaces, where it was there for exactly that reason.
 3. If the output says `UNAVAILABLE`, say the server could not be reached and do
    not guess from local files.
 4. If nothing is stored, say so and suggest "submit my trace".
