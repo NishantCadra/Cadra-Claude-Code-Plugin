@@ -421,13 +421,30 @@ The rule set is implemented once. Canonical source of truth is
 |---|---|
 | `cadra-prototype/proxy/redact.py` | Canonical |
 | `cadra-prototype/backend/services/redact.py` | Byte-identical twin (in-repo parity test) |
-| This plugin: `scripts/redact.py` | Vendored copy for the candidate machine |
+| This plugin: `scripts/cadra/redact.py` | Vendored **rule engine** plus plugin-only `redact_messages` |
 
 Edit order on every rules change: proxy → backend → plugin, then bump
 `rules_version` in all three. The plugin does **not** invent a parallel regex
-table. Cross-repo drift is caught by a release check that hashes
-`scripts/redact.py` against the proxy canonical file (or a checked-in golden
-hash). Envelope field `redaction.rules_version` must match the module constant.
+table.
+
+**The plugin copy is deliberately not byte-identical**, so a whole-file hash
+would report drift forever. Only the rule engine is shared — `RULES_VERSION`,
+the pattern tables, `_shannon_bits`, `_is_safe_shape`, `redact_text`. The
+plugin's `redact_messages` differs by design: it walks `tool_calls` and returns
+the redacted **write paths** for §8.1, which the server has no use for.
+
+So the shared region is delimited in all three files by literal sentinel lines:
+
+```python
+# --- BEGIN SHARED REDACTION RULES (see byo-trace-capture-design §8.0) ---
+...
+# --- END SHARED REDACTION RULES ---
+```
+
+The release check hashes **only the bytes between the sentinels** and compares
+across the three files. Anything outside them is each file's own. A file
+missing its sentinels fails the check rather than being skipped. Envelope field
+`redaction.rules_version` must match the module constant.
 
 **Rules, versioned as `rules_version`:**
 

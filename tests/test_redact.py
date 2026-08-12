@@ -56,3 +56,19 @@ def test_clean_write_content_reports_no_path():
                                            "content": "x = 1\n"}}}]}]
     _out, paths, n = redact_messages(messages)
     assert paths == set() and n == 0
+
+
+def test_shared_region_sentinels_are_present_and_well_formed():
+    """§8.0's cross-repo drift check hashes the bytes between these markers.
+    Without them the check has nothing to hash and would silently pass."""
+    from pathlib import Path
+
+    from cadra import redact as module
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    begin = "# --- BEGIN SHARED REDACTION RULES"
+    end = "# --- END SHARED REDACTION RULES ---"
+    assert source.count(begin) == 1 and source.count(end) == 1
+    shared = source[source.index(begin):source.index(end)]
+    assert "def redact_text" in shared, "the rule engine must be inside the region"
+    assert "def redact_messages" not in shared, "plugin-only code must be outside"

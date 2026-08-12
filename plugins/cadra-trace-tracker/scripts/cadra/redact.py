@@ -3,6 +3,11 @@
 Canonical source is cadra-prototype/proxy/redact.py. Edit order on any rules
 change: proxy -> backend -> plugin, then bump RULES_VERSION in all three.
 Do not add rules here first.
+
+Only the sentinel-delimited region below is shared; the release check hashes
+exactly those bytes across the three copies (§8.0). `redact_messages` sits
+outside it because it is plugin-only — the server has no use for the write
+paths it returns.
 """
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ import math
 import re
 from typing import Any
 
+# --- BEGIN SHARED REDACTION RULES (see byo-trace-capture-design §8.0) ---
 RULES_VERSION = "1"
 
 _TOKEN_PATTERNS = [
@@ -78,6 +84,7 @@ def redact_text(text: str) -> tuple[str, int]:
 
     out = _ENTROPY_CANDIDATE_RE.sub(_entropy, out)
     return out, count
+# --- END SHARED REDACTION RULES ---
 
 
 WRITE_CONTENT_KEYS = ("content", "new_string", "file_text", "code_edit", "newString")
