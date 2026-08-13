@@ -1,60 +1,22 @@
 # Cadra Trace Tracker — Claude Code Plugin
 
-Automatic, privacy-gated capture of Claude Code work sessions for program
-evaluation. Sessions run inside a registered project workspace are recorded as
-full prompt traces and submitted to the Cadra program database — with zero
-manual effort in the steady state. Everything outside the workspace is never
-touched.
+Submit your Claude Code work sessions to Cadra for a coding assessment.
 
-## How it works
+The plugin is **skills only**: there are no hooks and no background processes.
+Nothing is read, converted, or sent unless you ask for it in a conversation. All
+state lives in your workspace's `.cadra/` folder, which the plugin gitignores
+before it writes anything into it.
 
-```
-Claude Code session (inside workspace)
-        │  hooks: SessionStart / Stop / SessionEnd
-        ▼
-.claude-project marker?  ──no──▶  total no-op (nothing read, written, or sent)
-        │ yes
-        ▼
-snapshot transcript → _traces/raw → envelope (images stripped) → _traces/pending
-        │
-        ▼
-upload to program database (validated RPC: unknown user IDs rejected,
-server-stamped timestamps, upsert on session growth, analytics meta derived)
-        │
-        ▼
-_traces/sent + server-verified receipt
-```
+## The three skills
 
-**The `.claude-project` file is the entire contract.** Its presence in a folder
-makes that folder a traced workspace; after registration it also holds the
-user's ID. No folder-name matching, no other configuration. Delete-proofing,
-tamper refusal, and disclosure are enforced via session context injected at
-start.
+| Say | Skill | What happens |
+|---|---|---|
+| "connect to Cadra" | `cadra-connect` | Registers this workspace against your assessment token and proves the token works right away. Writes `.cadra/config.json`. |
+| "submit my trace" | `cadra-submit` | Previews exactly what would be sent, waits for your go-ahead, then submits and reports the server's receipt. |
+| "show my traces" | `cadra-traces` | Read-only list of what the server actually holds. Never uploads. |
 
-**Two reliability layers:**
-
-- **Hooks (automatic, best-effort):** every response is snapshotted; session
-  end and session start dispatch background uploads with offline queue + retry.
-- **`save-trace` skill (user-triggered, authoritative):** the user says
-  *"save my trace"* anytime — foreground upload, then the server itself is
-  asked which sessions exist, and the user gets a verified receipt.
-
-## User experience
-
-1. Install the plugin (two commands, below).
-2. Get the project workspace folder (shared separately as a git repo/zip).
-3. Open a terminal in the folder, run `claude`. First session: Claude explains
-   that work here is recorded and asks for the **5-digit user ID** issued to
-   the user by email. That's the entire setup.
-4. Work normally. Traces submit automatically at session end.
-
-Useful phrases inside the workspace:
-
-| Say | What happens |
-|---|---|
-| `save my trace` | Immediate submission with database-confirmed receipt |
-| `show my traces` | List of saved sessions (dates, titles, turns) + anything pending |
-| `my user id is wrong` | Re-registration with confirmation |
+You can submit as many times as you like. Each session is sent again only if it
+has changed since the last accepted submission.
 
 ## Install
 
@@ -63,27 +25,50 @@ claude plugin marketplace add https://github.com/NishantCadra/Cadra-Claude-Code-
 claude plugin install cadra-trace-tracker@cadra
 ```
 
-Updates ship via `claude plugin marketplace update cadra` followed by reinstall
-(or `claude plugin update`). Windows, macOS, and Linux are supported — hook
-commands try `python3` first and fall back to PowerShell on Windows.
+Then, in the root of your solution repository, run `claude` and say
+"connect to Cadra". You will be asked for the assessment token and proxy URL
+shown on your Cadra Setup page. Requires Python 3.11+ on `PATH`; the plugin uses
+the standard library only, so there is nothing to `pip install`.
+
+## Filesystem contract
+
+```
+<workspace>/
+  .gitignore          ← cadra-connect appends ".cadra/" if it is not already there
+  .cadra/
+    config.json       ← token and assessment binding (chmod 0600 on macOS/Linux)
+    state.json        ← which sessions have been accepted, and at what content
+    last-preview.json ← exactly what the last submit sent, or would have sent
+```
+
+**The write boundary is the load-bearing guarantee:** the plugin writes *only*
+inside `<workspace>/.cadra/`, plus that single append to `<workspace>/.gitignore`
+at connect time. Every other filesystem access is read-only. This is enforced by
+`tests/test_write_boundary.py`, which snapshots the whole workspace byte for byte
+around a real submission, a dry run, and a connect.
+
+There is one stated read exception: Claude Code stores transcripts under
+`~/.claude/projects/<encoded-cwd>/`, and no copy of them exists inside the repo,
+so the plugin reads them there. It never writes there, and your transcripts are
+left untouched — also a test.
 
 ## Privacy model
 
-- **Scope:** only sessions run from a folder containing `.claude-project` are
-  captured. Personal sessions, other projects, and the rest of the machine are
-  never read. A folder without the marker produces zero activity — no logs, no
-  files, no network.
-- **Disclosure:** every traced session announces it is being recorded, once,
-  at session start.
-- **Minimisation:** pasted images are stripped before upload. The shipped
-  database key can only call the validated submit/list endpoints — it cannot
-  read other users' data, update, or delete anything.
-- **Transparency:** everything captured sits readable on the user's own disk
-  (`_traces/`) before and after upload; `_traces/tracker.log` records every
-  capture decision; `show my traces` reflects the server's actual state.
-- **Identity:** the user types a 5-digit ID once. Names/emails live only in
-  the server-side roster; the server validates every upload against it and
-  stamps identity and time itself.
+- **You trigger everything.** No hooks, no session-end uploads, no background
+  daemon. If you never say "submit my trace", nothing ever leaves the machine.
+- **Preview before send.** `cadra-submit` runs a dry run first: it builds the
+  exact payload, writes it to `.cadra/last-preview.json`, prints every working
+  directory the sessions visited, and sends nothing. You decide from there.
+- **Scope.** Only sessions started in this workspace or below it are collected.
+  Sessions started elsewhere are never read.
+- **Redaction.** Secrets matching the shared rule set are replaced before the
+  payload is hashed or sent, and the affected files are reported to the server so
+  they are excluded from scoring rather than counted against you.
+- **No database credentials.** The plugin holds one assessment token, issued to
+  you, and talks only to the Cadra proxy. Identity is derived server-side from
+  the token; the client never asserts who you are.
+- **The server is the authority.** A submission is reported as saved only when
+  the server has confirmed it.
 
 ## Repository layout
 
@@ -91,22 +76,16 @@ commands try `python3` first and fall back to PowerShell on Windows.
 .claude-plugin/marketplace.json          marketplace listing
 plugins/cadra-trace-tracker/
   .claude-plugin/plugin.json             plugin manifest
-  hooks/hooks.json                       SessionStart / Stop / SessionEnd wiring
-  scripts/trace_hook.py|trace-hook.ps1   gate + snapshot + context + dispatch
-  scripts/submit_traces.py|-traces.ps1   harvest, upload, verify, --list
-  skills/register-user/                  one-question registration
-  skills/save-trace/                     verified on-demand submission
-  skills/my-traces/                      read-only saved-sessions view
-TESTING.md                               two-tester validation guide
+  skills/cadra-connect/                  register the workspace
+  skills/cadra-submit/                   preview, confirm, submit
+  skills/cadra-traces/                   read-only view of stored sessions
+  scripts/cadra_connect.py               connect entry point
+  scripts/cadra_submit.py                submit entry point
+  scripts/cadra_traces.py                list entry point
+  scripts/cadra/                         collect, adapt, redact, envelope, client
+docs/specs/                              design spec
+docs/plans/                              implementation plan
+tests/                                   pytest suite (dev only)
 ```
 
-## Versioning
-
-| Branch | State |
-|---|---|
-| `main` | Current release (v2.2.1): skills + hooks, single-marker identity |
-| `v2.0-hooks-only` | Previous release: hooks-only capture, pre-skills |
-
-Trace data is program evidence. Do not modify the plugin, the workspace's
-`_traces/` contents, or the `.claude-project` file (beyond registration) —
-tampering is treated as misconduct.
+Run the tests with `python -m pytest -q` from the repository root.
